@@ -288,6 +288,9 @@ static struct caps_opt caps_opt[] = {
 static struct caps_opt caps_opt[] = {};
 #endif
 
+const char *dev_base_path = "/dev/.lxc";
+const char *dev_user_path = "/dev/.lxc/user";
+
 static int run_buffer(char *buffer)
 {
 	struct lxc_popen_FILE *f;
@@ -1259,13 +1262,11 @@ static char *mk_devtmpfs(const char *name, char *path, const char *lxcpath)
 	struct stat s;
 	char tmp_path[MAXPATHLEN];
 	char fstype[MAX_FSTYPE_LEN];
-	char *base_path = "/dev/.lxc";
-	char *user_path = "/dev/.lxc/user";
 	uint64_t hash;
 
-	if ( 0 != access(base_path, F_OK) || 0 != stat(base_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
+	if ( 0 != access(dev_base_path, F_OK) || 0 != stat(dev_base_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
 		/* This is just making /dev/.lxc it better work or we're done */
-		ret = mkdir(base_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+		ret = mkdir(dev_base_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
 		if ( ret ) {
 			SYSERROR( "Unable to create /dev/.lxc for autodev" );
 			return NULL;
@@ -1299,19 +1300,19 @@ static char *mk_devtmpfs(const char *name, char *path, const char *lxcpath)
 		}
 	}
 
-	if ( 0 != access(user_path, F_OK) || 0 != stat(user_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
+	if ( 0 != access(dev_user_path, F_OK) || 0 != stat(dev_user_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
 		/*
 		 * This is making /dev/.lxc/user path for non-priv users.
 		 * If this doesn't work, we'll have to fall back in the
 		 * case of non-priv users.  It's mode 1777 like /tmp.
 		 */
-		ret = mkdir(user_path, S_IRWXU | S_IRWXG | S_IRWXO | S_ISVTX);
+		ret = mkdir(dev_user_path, S_IRWXU | S_IRWXG | S_IRWXO | S_ISVTX);
 		if ( ret ) {
 			/* Issue an error but don't fail yet! */
 			ERROR("Unable to create /dev/.lxc/user");
 		}
 		/* Umask tends to screw us up here */
-		chmod(user_path, S_IRWXU | S_IRWXG | S_IRWXO | S_ISVTX);
+		chmod(dev_user_path, S_IRWXU | S_IRWXG | S_IRWXO | S_ISVTX);
 	}
 
 	/*
@@ -1326,18 +1327,18 @@ static char *mk_devtmpfs(const char *name, char *path, const char *lxcpath)
 
 	hash = fnv_64a_buf(tmp_path, ret, FNV1A_64_INIT);
 
-	ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s.%016" PRIx64, base_path, name, hash);
+	ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s.%016" PRIx64, dev_base_path, name, hash);
 	if (ret < 0 || ret >= MAXPATHLEN)
 		return NULL;
 
 	if ( 0 != access(tmp_path, F_OK) || 0 != stat(tmp_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
 		ret = mkdir(tmp_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
 		if ( ret ) {
-			/* Something must have failed with the base_path...
-			 * Maybe unpriv user.  Try user_path now... */
+			/* Something must have failed with the dev_base_path...
+			 * Maybe unpriv user.  Try dev_user_path now... */
 			INFO("Setup in /dev/.lxc failed.  Trying /dev/.lxc/user." );
 
-			ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s.%016" PRIx64, user_path, name, hash);
+			ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s.%016" PRIx64, dev_user_path, name, hash);
 			if (ret < 0 || ret >= MAXPATHLEN)
 				return NULL;
 
@@ -1354,7 +1355,6 @@ static char *mk_devtmpfs(const char *name, char *path, const char *lxcpath)
 	strcpy( path, tmp_path );
 	return path;
 }
-
 
 /*
  * Do we want to add options for max size of /dev and a file to
@@ -1478,6 +1478,64 @@ static int setup_autodev(const char *root)
 	umask(cmask);
 
 	INFO("Populated /dev under %s", root);
+	return 0;
+}
+
+/*
+ * Locate allocated devtmpfs mount and purge it.
+ * path lookup mostly taken from mk_devtmpfs
+ */
+int lxc_delete_autodev(struct lxc_handler *handler)
+{
+	int ret;
+	struct stat s;
+	struct lxc_conf *lxc_conf = handler->conf;
+	const char *name = handler->name;
+	const char *lxcpath = handler->lxcpath;
+	char tmp_path[MAXPATHLEN];
+	uint64_t hash;
+
+	if ( lxc_conf->autodev <= 0 )
+		return 0;
+
+	/* don't clean on reboot */
+	if ( lxc_conf->reboot == 1 )
+		return 0;
+
+	/*
+	 * Use the same logic as mk_devtmpfs to compute candidate
+	 * path for cleanup.
+	 */
+
+	ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s", lxcpath, name);
+	if (ret < 0 || ret >= MAXPATHLEN)
+		return -1;
+
+	hash = fnv_64a_buf(tmp_path, ret, FNV1A_64_INIT);
+
+	/* Probe /dev/.lxc/<container name>.<hash> */
+	ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s.%016" PRIx64, dev_base_path, name, hash);
+	if (ret < 0 || ret >= MAXPATHLEN)
+		return -1;
+
+	if ( 0 != access(tmp_path, F_OK) || 0 != stat(tmp_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
+		/* Probe /dev/.lxc/user/<container name>.<hash> */
+		ret = snprintf(tmp_path, MAXPATHLEN, "%s/%s.%016" PRIx64, dev_user_path, name, hash);
+		if (ret < 0 || ret >= MAXPATHLEN)
+			return -1;
+
+		if ( 0 != access(tmp_path, F_OK) || 0 != stat(tmp_path, &s) || 0 == S_ISDIR(s.st_mode) ) {
+			WARN("Failed to locate autodev /dev/.lxc and /dev/.lxc/user." );
+			return -1;
+		}
+	}
+
+	/* Do the cleanup */
+	INFO("Cleaning %s", tmp_path );
+	if ( 0 != lxc_rmdir_onedev(tmp_path, NULL) ) {
+		ERROR("Failed to cleanup autodev" );
+	}
+
 	return 0;
 }
 
@@ -1869,10 +1927,74 @@ int parse_mntopts(const char *mntopts, unsigned long *mntflags,
 	return 0;
 }
 
+static void null_endofword(char *word)
+{
+	while (*word && *word != ' ' && *word != '\t')
+		word++;
+	*word = '\0';
+}
+
+/*
+ * skip @nfields spaces in @src
+ */
+static char *get_field(char *src, int nfields)
+{
+	char *p = src;
+	int i;
+
+	for (i = 0; i < nfields; i++) {
+		while (*p && *p != ' ' && *p != '\t')
+			p++;
+		if (!*p)
+			break;
+		p++;
+	}
+	return p;
+}
+
+static unsigned long get_mount_flags(const char *path)
+{
+	FILE *f = fopen("/proc/self/mountinfo", "r");
+	char *line = NULL;
+	size_t len = 0;
+	unsigned long flags = 0;
+
+	if (!f) {
+		WARN("Failed to open /proc/self/mountinfo");
+		return 0;
+	}
+	while (getline(&line, &len, f) != -1) {
+		char *target, *opts, *p, *saveptr = NULL;
+		target = get_field(line, 4);
+		if (!target)
+			continue;
+		opts = get_field(target, 2);
+		if (!opts)
+			continue;
+		null_endofword(opts);
+		for (p = strtok_r(opts, ",", &saveptr); p;
+			p = strtok_r(NULL, ",", &saveptr)) {
+			if (strcmp(p, "ro") == 0)
+				flags |= MS_RDONLY;
+			else if (strcmp(p, "nodev") == 0)
+				flags |= MS_NODEV;
+			else if (strcmp(p, "nosuid") == 0)
+				flags |= MS_NOSUID;
+			else if (strcmp(p, "noexec") == 0)
+				flags |= MS_NOEXEC;
+			/* XXX todo - we'll have to deal with atime? */
+		}
+	}
+	free(line);
+	fclose(f);
+	return flags;
+}
+
 static int mount_entry(const char *fsname, const char *target,
 		       const char *fstype, unsigned long mountflags,
 		       const char *data, int optional)
 {
+	unsigned long extraflags;
 	if (mount(fsname, target, fstype, mountflags & ~MS_REMOUNT, data)) {
 		if (optional) {
 			INFO("failed to mount '%s' on '%s' (optional): %s", fsname,
@@ -1886,9 +2008,20 @@ static int mount_entry(const char *fsname, const char *target,
 	}
 
 	if ((mountflags & MS_REMOUNT) || (mountflags & MS_BIND)) {
+		extraflags = get_mount_flags(target);
+		DEBUG("flags was %lu, extraflags set to %lu", mountflags, extraflags);
+		if (!(mountflags & MS_REMOUNT) && (mountflags & MS_BIND)) {
+			if (!(extraflags & ~mountflags))
+				DEBUG("all mount flags match, skipping remount");
+				goto skipremount;
+		}
+		mountflags |= extraflags;
+	}
 
-		DEBUG("remounting %s on %s to respect bind or remount options",
-		      fsname, target);
+	if ((mountflags & MS_REMOUNT) || (mountflags & MS_BIND)) {
+		DEBUG("remounting %s on %s to respect bind or remount options %lu (extra %lu)",
+		      fsname ? fsname : "(none)",
+		      target ? target : "(none)", mountflags, extraflags);
 
 		if (mount(fsname, target, fstype,
 			  mountflags | MS_REMOUNT, data)) {
@@ -1905,6 +2038,7 @@ static int mount_entry(const char *fsname, const char *target,
 		}
 	}
 
+skipremount:
 	DEBUG("mounted '%s' on '%s', type '%s'", fsname, target, fstype);
 
 	return 0;
@@ -3828,31 +3962,6 @@ void tmp_proc_unmount(struct lxc_conf *lxc_conf)
 		umount("/proc");
 		lxc_conf->tmp_umount_proc = 0;
 	}
-}
-
-static void null_endofword(char *word)
-{
-	while (*word && *word != ' ' && *word != '\t')
-		word++;
-	*word = '\0';
-}
-
-/*
- * skip @nfields spaces in @src
- */
-static char *get_field(char *src, int nfields)
-{
-	char *p = src;
-	int i;
-
-	for (i = 0; i < nfields; i++) {
-		while (*p && *p != ' ' && *p != '\t')
-			p++;
-		if (!*p)
-			break;
-		p++;
-	}
-	return p;
 }
 
 static void remount_all_slave(void)
