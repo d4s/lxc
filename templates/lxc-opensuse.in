@@ -11,6 +11,7 @@
 # Daniel Lezcano <daniel.lezcano@free.fr>
 # Frederic Crozat <fcrozat@suse.com>
 # Michael H. Warfield <mhw@WittsEnd.com>
+# Johannes Kastl <mail@ojkastl.de>
 
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -38,8 +39,6 @@ done
 
 # Make sure the usual locations are in PATH
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
-
-DISTRO=12.3
 
 configure_opensuse()
 {
@@ -137,8 +136,13 @@ download_opensuse()
     echo "Downloading opensuse minimal ..."
     mkdir -p "$cache/partial-$arch-packages"
     zypper --quiet --root $cache/partial-$arch-packages --non-interactive ar http://download.opensuse.org/distribution/$DISTRO/repo/oss/ repo-oss || return 1
-    zypper --quiet --root $cache/partial-$arch-packages --non-interactive ar http://download.opensuse.org/update/$DISTRO/ update || return 1
-    zypper --quiet --root $cache/partial-$arch-packages --non-interactive --gpg-auto-import-keys update || return 1
+    # Leap update repos were rearranged
+    if [ $DISTRO == "leap/42.1" ]; then
+        zypper --quiet --root $cache/partial-$arch-packages --non-interactive ar http://download.opensuse.org/update/$DISTRO/oss/ update || return 1
+    else
+        zypper --quiet --root $cache/partial-$arch-packages --non-interactive ar http://download.opensuse.org/update/$DISTRO/ update || return 1
+    fi
+	zypper --quiet --root $cache/partial-$arch-packages --non-interactive --gpg-auto-import-keys update || return 1
     zypper --root $cache/partial-$arch-packages --non-interactive in --auto-agree-with-licenses --download-only zypper lxc patterns-openSUSE-base bash iputils sed tar rsyslog || return 1
     cat > $cache/partial-$arch-packages/opensuse.conf << EOF
 Preinstall: aaa_base bash coreutils diffutils
@@ -158,12 +162,30 @@ Support: ncurses-utils
 Support: iputils
 Support: udev
 Support: netcfg
-Support: dhcpcd hwinfo insserv-compat module-init-tools openSUSE-release openssh
+Support: hwinfo insserv-compat module-init-tools openSUSE-release openssh
 Support: pwdutils rpcbind sysconfig
 
 Ignore: rpm:suse-build-key,build-key
 Ignore: systemd:systemd-presets-branding
 EOF
+
+    if [ $DISTRO = "13.2" ]
+    then
+	echo "Support: python3-base" >> $cache/partial-$arch-packages/opensuse.conf
+    fi
+
+    # dhcpcd is not in the default repos with Leap 42.1
+    if [ $DISTRO != "leap/42.1" ]
+    then
+    echo "Support: dhcpcd" >> $cache/partial-$arch-packages/opensuse.conf
+    fi
+
+    # Leap doesn't seem to have iproute2 utils installed
+    if [ $DISTRO == "leap/42.1" ]
+    then
+    echo "Support: net-tools iproute2" >> $cache/partial-$arch-packages/opensuse.conf
+    fi
+
     if [ "$arch" = "i686" ]; then
         mkdir -p $cache/partial-$arch-packages/var/cache/zypp/packages/repo-oss/suse/i686/
         for i in "$cache/partial-$arch-packages/var/cache/zypp/packages/repo-oss/suse/i586/*" ; do
@@ -175,9 +197,16 @@ EOF
         done
     fi
 
+    # openSUSE 13.2 has no noarch directory in update
+    [ -d $cache/partial-$arch-packages/var/cache/zypp/packages/update/noarch ] || mkdir -p $cache/partial-$arch-packages/var/cache/zypp/packages/update/noarch
+
     CLEAN_BUILD=1 BUILD_ARCH="$arch" BUILD_ROOT="$cache/partial-$arch" BUILD_DIST="$cache/partial-$arch-packages/opensuse.conf" PATH="$PATH:/usr/lib/build" /usr/lib/build/init_buildsystem  --clean --configdir /usr/lib/build/configs --cachedir $cache/partial-$arch-cache --repository $cache/partial-$arch-packages/var/cache/zypp/packages/repo-oss/suse/$arch --repository $cache/partial-$arch-packages/var/cache/zypp/packages/repo-oss/suse/noarch --repository $cache/partial-$arch-packages/var/cache/zypp/packages/update/$arch --repository $cache/partial-$arch-packages/var/cache/zypp/packages/update/noarch || return 1
     chroot $cache/partial-$arch /usr/bin/zypper --quiet --non-interactive ar http://download.opensuse.org/distribution/$DISTRO/repo/oss repo-oss || return 1
-    chroot $cache/partial-$arch /usr/bin/zypper --quiet --non-interactive ar http://download.opensuse.org/update/$DISTRO/ update || return 1
+    if [ $DISTRO == "leap/42.1" ]; then
+        chroot $cache/partial-$arch /usr/bin/zypper --quiet --non-interactive ar http://download.opensuse.org/update/$DISTRO/oss update || return 1
+    else
+        chroot $cache/partial-$arch /usr/bin/zypper --quiet --non-interactive ar http://download.opensuse.org/update/$DISTRO/ update || return 1
+    fi
 #   really clean the image
     rm -fr $cache/partial-$arch/{.build,.guessed_dist,.srcfiles*,installed-pkg}
     rm -fr $cache/partial-$arch/dev
@@ -219,7 +248,8 @@ copy_opensuse()
 
 install_opensuse()
 {
-    cache="@LOCALSTATEDIR@/cache/lxc/opensuse"
+    # Allow the cache base to be set by environment variable
+    cache="${LXC_CACHE_PATH:-@LOCALSTATEDIR@/cache/lxc/opensuse/$DISTRO}"
     rootfs=$1
     mkdir -p @LOCALSTATEDIR@/lock/subsys/
     (
@@ -313,7 +343,7 @@ lxc.include = @LXCTEMPLATECONFIG@/opensuse.common.conf
 lxc.arch = $arch
 lxc.utsname = $name
 
-lxc.mount = $path/fstab
+lxc.mount.auto = cgroup:mixed proc:mixed sys:mixed
 
 # When using LXC with apparmor, uncomment the next line to run unconfined:
 #lxc.aa_profile = unconfined
@@ -332,12 +362,6 @@ lxc.mount = $path/fstab
 
 EOF
 
-    cat <<EOF > $path/fstab
-proc            proc         proc	nodev,noexec,nosuid 0 0
-sysfs           sys          sysfs	defaults  0 0
-tmpfs           run          tmpfs	mode=0755,nodev,nosuid 0 0
-EOF
-
     if [ $? -ne 0 ]; then
         echo "Failed to add configuration"
         return 1
@@ -348,7 +372,7 @@ EOF
 
 clean()
 {
-    cache="@LOCALSTATEDIR@/cache/lxc/opensuse"
+    cache="${LXC_CACHE_PATH:-@LOCALSTATEDIR@/cache/lxc/opensuse}"
 
     if [ ! -e $cache ]; then
         exit 0
@@ -371,7 +395,9 @@ clean()
 usage()
 {
     cat <<EOF
-$1 -h|--help -p|--path=<path> --clean
+$1 -h|--help -p|--path=<path> -r|--release nn.n --clean
+Please give the release as 13.1, 13.2 etc.
+If no release is given, openSUSE 13.1 is installed.
 EOF
     return 0
 }
@@ -379,7 +405,7 @@ EOF
 # Make arch a global.  This may become configurable?
 arch=$(uname -m)
 
-options=$(getopt -o hp:n:c -l help,rootfs:,path:,name:,clean -- "$@")
+options=$(getopt -o hp:n:r:c -l help,rootfs:,path:,name:,release:,clean -- "$@")
 if [ $? -ne 0 ]; then
     usage $(basename $0)
     exit 1
@@ -393,7 +419,8 @@ do
         -p|--path)      path=$2; shift 2;;
         --rootfs)       rootfs=$2; shift 2;;
         -n|--name)      name=$2; shift 2;;
-        -c|--clean)     clean=$2; shift 2;;
+        -r|--release)   DISTRO=$2; shift 2;;
+        -c|--clean)     clean=1; shift 1;;
         --)             shift 1; break ;;
         *)              break ;;
     esac
@@ -414,6 +441,42 @@ if [ -z "$path" ]; then
     echo "'path' parameter is required"
     exit 1
 fi
+
+if grep -q Harlequin /etc/os-release || grep -q Tumbleweed /etc/os-release ; then
+    BVER=`rpm -q --qf '%{version}\n' build`
+    if [ $? -ne 0 -o "$BVER" -lt "20141120" ]; then
+	echo "Building openSUSE containers with your version of the build package is broken. Please install the update to version 20141120 or newer."
+	exit 1
+    fi
+fi
+
+if [ -z "$DISTRO" ]; then
+    echo ""
+    echo "No release selected, using openSUSE 13.1"
+    DISTRO=13.1
+else
+    echo ""
+    case "$DISTRO" in
+	13.1)
+	    echo "Selected openSUSE 13.1"
+	    ;;
+
+	13.2)
+	    echo "Selected openSUSE 13.2"
+	    ;;
+
+	42.1|leap/42.1|leap)
+	    echo "Selected openSUSE Leap 42.1"
+	    DISTRO="leap/42.1"
+	    ;;
+
+	*)
+	    echo "You have chosen an invalid release, quitting..."
+	    exit 1
+	    ;;
+    esac
+fi
+
 
 if [ "$(id -u)" != "0" ]; then
     echo "This script should be run as 'root'"
@@ -448,7 +511,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-if [ ! -z $clean ]; then
+if [ ! -z "$clean" ]; then
     clean || exit 1
     exit 0
 fi

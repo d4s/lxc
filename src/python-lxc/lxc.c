@@ -37,6 +37,7 @@ char**
 convert_tuple_to_char_pointer_array(PyObject *argv) {
     int argc;
     int i, j;
+    char **result;
 
     /* not a list or tuple */
     if (!PyList_Check(argv) && !PyTuple_Check(argv)) {
@@ -46,7 +47,7 @@ convert_tuple_to_char_pointer_array(PyObject *argv) {
 
     argc = PySequence_Fast_GET_SIZE(argv);
 
-    char **result = (char**) calloc(argc + 1, sizeof(char*));
+    result = (char**) calloc(argc + 1, sizeof(char*));
 
     if (result == NULL) {
         PyErr_SetNone(PyExc_MemoryError);
@@ -54,11 +55,10 @@ convert_tuple_to_char_pointer_array(PyObject *argv) {
     }
 
     for (i = 0; i < argc; i++) {
-        PyObject *pyobj = PySequence_Fast_GET_ITEM(argv, i);
-        assert(pyobj != NULL);
-
         char *str = NULL;
         PyObject *pystr = NULL;
+        PyObject *pyobj = PySequence_Fast_GET_ITEM(argv, i);
+        assert(pyobj != NULL);
 
         if (!PyUnicode_Check(pyobj)) {
             PyErr_SetString(PyExc_ValueError, "Expected a string");
@@ -117,6 +117,12 @@ struct lxc_attach_python_payload {
 
 static int lxc_attach_python_exec(void* _payload)
 {
+    /* This function is the first one to be called after attaching to a
+     * container. As lxc_attach() calls fork() PyOS_AfterFork should be called
+     * in the new process if the Python interpreter will continue to be used.
+     */
+    PyOS_AfterFork();
+
     struct lxc_attach_python_payload *payload =
         (struct lxc_attach_python_payload *)_payload;
     PyObject *result = PyObject_CallFunctionObjArgs(payload->fn,
@@ -237,8 +243,7 @@ void lxc_attach_free_options(lxc_attach_options_t *options)
     int i;
     if (!options)
         return;
-    if (options->initial_cwd)
-        free(options->initial_cwd);
+    free(options->initial_cwd);
     if (options->extra_env_vars) {
         for (i = 0; options->extra_env_vars[i]; i++)
             free(options->extra_env_vars[i]);
@@ -520,6 +525,66 @@ Container_state(Container *self, void *closure)
 
 /* Container Functions */
 static PyObject *
+Container_attach_interface(Container *self, PyObject *args, PyObject *kwds)
+{
+    static char *kwlist[] = {"src_ifname", "dst_ifname", NULL};
+    char *src_name = NULL;
+    char *dst_name = NULL;
+    PyObject *py_src_name = NULL;
+    PyObject *py_dst_name = NULL;
+
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "O&|O&", kwlist,
+                                      PyUnicode_FSConverter, &py_src_name,
+                                      PyUnicode_FSConverter, &py_dst_name))
+        return NULL;
+
+    if (py_src_name != NULL) {
+        src_name = PyBytes_AS_STRING(py_src_name);
+        assert(src_name != NULL);
+    }
+
+    if (py_dst_name != NULL) {
+        dst_name = PyBytes_AS_STRING(py_dst_name);
+        assert(dst_name != NULL);
+    }
+
+    if (self->container->attach_interface(self->container, src_name, dst_name)) {
+        Py_XDECREF(py_src_name);
+        Py_XDECREF(py_dst_name);
+        Py_RETURN_TRUE;
+    }
+
+    Py_XDECREF(py_src_name);
+    Py_XDECREF(py_dst_name);
+    Py_RETURN_FALSE;
+}
+
+static PyObject *
+Container_detach_interface(Container *self, PyObject *args, PyObject *kwds)
+{
+    static char *kwlist[] = {"ifname", NULL};
+    char *ifname = NULL;
+    PyObject *py_ifname = NULL;
+
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "O&", kwlist,
+                                      PyUnicode_FSConverter, &py_ifname))
+        return NULL;
+
+    if (py_ifname != NULL) {
+        ifname = PyBytes_AS_STRING(py_ifname);
+        assert(ifname != NULL);
+    }
+
+    if (self->container->detach_interface(self->container, ifname, NULL)) {
+        Py_XDECREF(py_ifname);
+        Py_RETURN_TRUE;
+    }
+
+    Py_XDECREF(py_ifname);
+    Py_RETURN_FALSE;
+}
+
+static PyObject *
 Container_add_device_node(Container *self, PyObject *args, PyObject *kwds)
 {
     static char *kwlist[] = {"src_path", "dest_path", NULL};
@@ -741,11 +806,11 @@ Container_create(Container *self, PyObject *args, PyObject *kwds)
     char** create_args = {NULL};
     PyObject *retval = NULL;
     PyObject *vargs = NULL;
+    char *bdevtype = NULL;
     int i = 0;
-    static char *kwlist[] = {"template", "flags", "args", NULL};
-
-    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|siO", kwlist,
-                                      &template_name, &flags, &vargs))
+    static char *kwlist[] = {"template", "flags", "bdevtype", "args", NULL};
+    if (! PyArg_ParseTupleAndKeywords(args, kwds, "|sisO", kwlist,
+                                      &template_name, &flags, &bdevtype, &vargs))
         return NULL;
 
     if (vargs) {
@@ -761,7 +826,7 @@ Container_create(Container *self, PyObject *args, PyObject *kwds)
         }
     }
 
-    if (self->container->create(self->container, template_name, NULL, NULL,
+    if (self->container->create(self->container, template_name, bdevtype, NULL,
                                 flags, create_args))
         retval = Py_True;
     else
@@ -806,6 +871,7 @@ Container_get_cgroup_item(Container *self, PyObject *args, PyObject *kwds)
     static char *kwlist[] = {"key", NULL};
     char* key = NULL;
     int len = 0;
+    char* value;
     PyObject *ret = NULL;
 
     if (! PyArg_ParseTupleAndKeywords(args, kwds, "s", kwlist,
@@ -819,7 +885,7 @@ Container_get_cgroup_item(Container *self, PyObject *args, PyObject *kwds)
         return NULL;
     }
 
-    char* value = (char*) malloc(sizeof(char)*len + 1);
+    value = (char*) malloc(sizeof(char)*len + 1);
     if (value == NULL)
         return PyErr_NoMemory();
 
@@ -841,6 +907,7 @@ Container_get_config_item(Container *self, PyObject *args, PyObject *kwds)
     static char *kwlist[] = {"key", NULL};
     char* key = NULL;
     int len = 0;
+    char* value;
     PyObject *ret = NULL;
 
     if (! PyArg_ParseTupleAndKeywords(args, kwds, "s|", kwlist,
@@ -858,7 +925,7 @@ Container_get_config_item(Container *self, PyObject *args, PyObject *kwds)
         return PyUnicode_FromString("");
     }
 
-    char* value = (char*) malloc(sizeof(char)*len + 1);
+    value = (char*) malloc(sizeof(char)*len + 1);
     if (value == NULL)
         return PyErr_NoMemory();
 
@@ -887,6 +954,7 @@ Container_get_keys(Container *self, PyObject *args, PyObject *kwds)
     static char *kwlist[] = {"key", NULL};
     char* key = NULL;
     int len = 0;
+    char* value;
     PyObject *ret = NULL;
 
     if (! PyArg_ParseTupleAndKeywords(args, kwds, "|s", kwlist,
@@ -900,7 +968,7 @@ Container_get_keys(Container *self, PyObject *args, PyObject *kwds)
         return NULL;
     }
 
-    char* value = (char*) malloc(sizeof(char)*len + 1);
+    value = (char*) malloc(sizeof(char)*len + 1);
     if (value == NULL)
         return PyErr_NoMemory();
 
@@ -1467,6 +1535,18 @@ static PyGetSetDef Container_getseters[] = {
 };
 
 static PyMethodDef Container_methods[] = {
+    {"attach_interface", (PyCFunction)Container_attach_interface,
+     METH_VARARGS|METH_KEYWORDS,
+     "attach_interface(src_ifname, dest_ifname) -> boolean\n"
+     "\n"
+     "Pass a new network device to the container."
+    },
+    {"detach_interface", (PyCFunction)Container_detach_interface,
+     METH_VARARGS|METH_KEYWORDS,
+     "detach_interface(ifname) -> boolean\n"
+     "\n"
+     "detach a network device from the container."
+    },
     {"add_device_node", (PyCFunction)Container_add_device_node,
      METH_VARARGS|METH_KEYWORDS,
      "add_device_node(src_path, dest_path) -> boolean\n"

@@ -59,6 +59,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
       <arg choice="opt">--bdir</arg>
       <arg choice="opt">--user</arg>
       <arg choice="opt">--key</arg>
+      <arg choice="opt">--storage-type</arg>
       <arg choice="opt">--union-type</arg>
       <arg choice="opt">--keep-data</arg>
       <arg choice="opt">COMMAND</arg>
@@ -81,7 +82,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
     <variablelist>
       <varlistentry>
         <term>
-          <option>-o</option>
+          <option>-o, --orig <replaceable>orig</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -95,7 +96,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>-n</optional></option>
+          <option>-n, --name <replaceable>name</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -109,7 +110,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>-d</optional></option>
+          <option>-d, --daemon</option>
         </term>
         <listitem>
           <para>
@@ -125,7 +126,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>--bdir</optional></option>
+          <option>-b, --bdir <replaceable>bdir</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -141,7 +142,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>--user</optional></option>
+          <option>-u, --user <replaceable>user</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -157,7 +158,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>--key</optional></option>
+          <option>-S, --key <replaceable>key</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -171,7 +172,21 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>--union-type</optional></option>
+          <option>-s, --storage-type <replaceable>storage type</replaceable></option>
+        </term>
+        <listitem>
+          <para>
+            <!--
+            Specify the type of storage used by the container. Valid types are tmpfs or dir.
+              -->
+            コンテナが使うストレージのタイプ。tmpfs か dir を指定できます。
+          </para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term>
+          <option>-U, --union-type <replaceable>union type</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -187,7 +202,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>--keep-data</optional></option>
+          <option>-k, --keep-data</option>
         </term>
         <listitem>
           <para>
@@ -203,16 +218,18 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 
       <varlistentry>
         <term>
-          <option><optional>COMMAND</optional></option>
+          <option>COMMAND</option>
         </term>
         <listitem>
           <para>
             <!--
             Immediately run the provided command in the container.
-            This currently uses ssh (not attach) and is incompatible
-            with daemon mode.
+            This uses attach if the kernel supports it, otherwise uses ssh.
+            This is incompatible with daemon mode.
             -->
-            即座に指定したコマンドをコンテナ内で実行します。現時点では (attach ではなく) ssh を使用します。そしてデーモンモードと両方を指定することはできません。
+            即座に指定したコマンドをコンテナ内で実行します。
+            コマンドを実行する際、カーネルがサポートしている場合は lxc-start-ephemeral は attach を使います。
+            カーネルがサポートしていない場合は ssh を使います。
           </para>
         </listitem>
       </varlistentry>
@@ -260,6 +277,17 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
         </listitem>
       </varlistentry>
     </variablelist>
+  </refsect1>
+
+  <refsect1>
+    <title><!-- Notes -->注意</title>
+    <para>
+      <!--
+    <command>lxc-start-ephemeral</command> is deprecated in favor of
+    <command>lxc-copy</command>.
+    -->
+      <command>lxc-start-ephemeral</command> は <command>lxc-copy</command> に置き換えられ、廃止される予定です。
+    </para>
   </refsect1>
 
   &seealso;

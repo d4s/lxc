@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <sys/types.h>
 #include <pwd.h>
+#include <grp.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -52,10 +53,12 @@
 
 static void usage(char *me, bool fail)
 {
-	fprintf(stderr, "Usage: %s pid type bridge nicname\n", me);
+	fprintf(stderr, "Usage: %s lxcpath name pid type bridge nicname\n", me);
 	fprintf(stderr, " nicname is the name to use inside the container\n");
 	exit(fail ? 1 : 0);
 }
+
+static char *lxcpath, *lxcname;
 
 static int open_and_lock(char *path)
 {
@@ -96,20 +99,175 @@ static char *get_username(void)
 	return pwd->pw_name;
 }
 
+static void free_groupnames(char **groupnames)
+{
+	int i;
+	if (!groupnames)
+		return;
+	for (i = 0; groupnames[i]; i++)
+		free(groupnames[i]);
+	free(groupnames);
+}
+
+static char **get_groupnames(void)
+{
+	int ngroups;
+	gid_t *group_ids;
+	int ret, i;
+	char **groupnames;
+	struct group *gr;
+
+	ngroups = getgroups(0, NULL);
+
+	if (ngroups == -1) {
+		fprintf(stderr, "Failed to get number of groups user belongs to: %s\n", strerror(errno));
+		return NULL;
+	}
+	if (ngroups == 0)
+		return NULL;
+
+	group_ids = (gid_t *)malloc(sizeof(gid_t)*ngroups);
+
+	if (group_ids == NULL) {
+		fprintf(stderr, "Out of memory while getting groups the user belongs to\n");
+		return NULL;
+	}
+
+	ret = getgroups(ngroups, group_ids);
+
+	if (ret < 0) {
+		free(group_ids);
+		fprintf(stderr, "Failed to get process groups: %s\n", strerror(errno));
+		return NULL;
+	}
+
+	groupnames = (char **)malloc(sizeof(char *)*(ngroups+1));
+
+	if (groupnames == NULL) {
+		free(group_ids);
+		fprintf(stderr, "Out of memory while getting group names\n");
+		return NULL;
+	}
+
+	memset(groupnames, 0, sizeof(char *)*(ngroups+1));
+
+	for (i=0; i<ngroups; i++ ) {
+		gr = getgrgid(group_ids[i]);
+
+		if (gr == NULL) {
+			fprintf(stderr, "Failed to get group name\n");
+			free(group_ids);
+			free_groupnames(groupnames);
+			return NULL;
+		}
+
+		groupnames[i] = strdup(gr->gr_name);
+
+		if (groupnames[i] == NULL) {
+			fprintf(stderr, "Failed to copy group name: %s", gr->gr_name);
+			free(group_ids);
+			free_groupnames(groupnames);
+			return NULL;
+		}
+	}
+
+	free(group_ids);
+
+	return groupnames;
+}
+
+static bool name_is_in_groupnames(char *name, char **groupnames)
+{
+	while (groupnames != NULL) {
+		if (strcmp(name, *groupnames) == 0)
+			return true;
+		groupnames++;
+	}
+	return false;
+}
+
+struct alloted_s {
+	char *name;
+	int allowed;
+	struct alloted_s *next;
+};
+
+static struct alloted_s *append_alloted(struct alloted_s **head, char *name, int n)
+{
+	struct alloted_s *cur, *al;
+
+	if (head == NULL || name == NULL) {
+		// sanity check. parameters should not be null
+		fprintf(stderr, "NULL parameters to append_alloted not allowed\n");
+		return NULL;
+	}
+
+	al = (struct alloted_s *)malloc(sizeof(struct alloted_s));
+
+	if (al == NULL) {
+		// unable to allocate memory to new struct
+		fprintf(stderr, "Out of memory in append_alloted\n");
+		return NULL;
+	}
+
+	al->name = strdup(name);
+
+	if (al->name == NULL) {
+		free(al);
+		return NULL;
+	}
+
+	al->allowed = n;
+	al->next = NULL;
+
+	if (*head == NULL) {
+		*head = al;
+		return al;
+	}
+
+	cur = *head;
+	while (cur->next != NULL)
+		cur = cur->next;
+
+	cur->next = al;
+	return al;
+}
+
+static void free_alloted(struct alloted_s **head)
+{
+	struct alloted_s *cur;
+
+	if (head == NULL) {
+		return;
+	}
+
+	cur = *head;
+
+	while (cur != NULL) {
+		cur = cur->next;
+		free((*head)->name);
+		free(*head);
+		*head = cur;
+	}
+}
+
 /* The configuration file consists of lines of the form:
  *
  * user type bridge count
+ * or
+ * @group type bridge count
  *
  * Return the count entry for the calling user if there is one.  Else
  * return -1.
  */
-static int get_alloted(char *me, char *intype, char *link)
+static int get_alloted(char *me, char *intype, char *link, struct alloted_s **alloted)
 {
 	FILE *fin = fopen(LXC_USERNIC_CONF, "r");
 	char *line = NULL;
-	char user[100], type[100], br[100];
+	char name[100], type[100], br[100];
 	size_t len = 0;
-	int n = -1, ret;
+	int n, ret, count = 0;
+	char **groups;
 
 	if (!fin) {
 		fprintf(stderr, "Failed to open %s: %s\n", LXC_USERNIC_CONF,
@@ -117,25 +275,48 @@ static int get_alloted(char *me, char *intype, char *link)
 		return -1;
 	}
 
+	groups = get_groupnames();
 	while ((getline(&line, &len, fin)) != -1) {
-		ret = sscanf(line, "%99[^ \t] %99[^ \t] %99[^ \t] %d", user, type, br, &n);
+		ret = sscanf(line, "%99[^ \t] %99[^ \t] %99[^ \t] %d", name, type, br, &n);
 
 		if (ret != 4)
 			continue;
-		if (strcmp(user, me) != 0)
+
+		if (strlen(name) == 0)
 			continue;
+
+		if (strcmp(name, me) != 0)
+		{
+			if (name[0] != '@')
+				continue;
+			if (!name_is_in_groupnames(name+1, groups))
+				continue;
+		}
 		if (strcmp(type, intype) != 0)
 			continue;
 		if (strcmp(link, br) != 0)
 			continue;
-		free(line);
-		fclose(fin);
-		return n;
+
+		/* found the user or group with the appropriate settings, therefore finish the search.
+		 * what to do if there are more than one applicable lines? not specified in the docs.
+		 * since getline is implemented with realloc, we don't need to free line until exiting func.
+		 *
+		 * if append_alloted returns NULL, e.g. due to a malloc error, we set count to 0 and break the loop,
+		 * allowing cleanup and then exiting from main()
+		 */
+		if (append_alloted(alloted, name, n) == NULL) {
+			count = 0;
+			break;
+		}
+		count += n;
 	}
+
+	free_groupnames(groups);
 	fclose(fin);
-	if (line)
-		free(line);
-	return -1;
+	free(line);
+
+	// now return the total number of nics that this user can create
+	return count;
 }
 
 static char *get_eol(char *s, char *e)
@@ -155,7 +336,7 @@ static char *get_eow(char *s, char *e)
 static char *find_line(char *p, char *e, char *u, char *t, char *l)
 {
 	char *p1, *p2, *ret;
-	
+
 	while (p<e  && (p1 = get_eol(p, e)) < e) {
 		ret = p;
 		if (*p == '#')
@@ -188,6 +369,8 @@ static bool nic_exists(char *nic)
 	int ret;
 	struct stat sb;
 
+	if (strcmp(nic, "none") == 0)
+		return true;
 	ret = snprintf(path, MAXPATHLEN, "/sys/class/net/%s", nic);
 	if (ret < 0 || ret >= MAXPATHLEN) // should never happen!
 		return false;
@@ -197,7 +380,7 @@ static bool nic_exists(char *nic)
 	return true;
 }
 
-static int instanciate_veth(char *n1, char **n2)
+static int instantiate_veth(char *n1, char **n2)
 {
 	int err;
 
@@ -246,29 +429,31 @@ static bool create_nic(char *nic, char *br, int pid, char **cnic)
 	}
 
 	/* create the nics */
-	if (instanciate_veth(veth1buf, &veth2buf) < 0) {
+	if (instantiate_veth(veth1buf, &veth2buf) < 0) {
 		fprintf(stderr, "Error creating veth tunnel\n");
 		return false;
 	}
 
-	/* copy the bridge's mtu to both ends */
-	mtu = get_mtu(br);
-	if (mtu != -1) {
-		if (lxc_netdev_set_mtu(veth1buf, mtu) < 0 ||
-				lxc_netdev_set_mtu(veth2buf, mtu) < 0) {
-			fprintf(stderr, "Failed setting mtu\n");
+	if (strcmp(br, "none") != 0) {
+		/* copy the bridge's mtu to both ends */
+		mtu = get_mtu(br);
+		if (mtu != -1) {
+			if (lxc_netdev_set_mtu(veth1buf, mtu) < 0 ||
+					lxc_netdev_set_mtu(veth2buf, mtu) < 0) {
+				fprintf(stderr, "Failed setting mtu\n");
+				goto out_del;
+			}
+		}
+
+		/* attach veth1 to bridge */
+		if (lxc_bridge_attach(lxcpath, lxcname, br, veth1buf) < 0) {
+			fprintf(stderr, "Error attaching %s to %s\n", veth1buf, br);
 			goto out_del;
 		}
 	}
 
-	/* attach veth1 to bridge */
-	if (lxc_bridge_attach(br, veth1buf) < 0) {
-		fprintf(stderr, "Error attaching %s to %s\n", veth1buf, br);
-		goto out_del;
-	}
-
 	/* pass veth2 to target netns */
-	ret = lxc_netdev_move_by_name(veth2buf, pid);
+	ret = lxc_netdev_move_by_name(veth2buf, pid, NULL);
 	if (ret < 0) {
 		fprintf(stderr, "Error moving %s to netns %d\n", veth2buf, pid);
 		goto out_del;
@@ -358,7 +543,7 @@ static bool cull_entries(int fd, char *me, char *t, char *br)
 		p += entry_lines[n-1].len + 1;
 		if (p >= e)
 			break;
-	}
+ 	}
 	p = buf;
 	for (i=0; i<n; i++) {
 		if (!entry_lines[i].keep)
@@ -393,17 +578,22 @@ static int count_entries(char *buf, off_t len, char *me, char *t, char *br)
  * The dbfile has lines of the format:
  * user type bridge nicname
  */
-static bool get_nic_if_avail(int fd, char *me, int pid, char *intype, char *br, int allowed, char **nicname, char **cnic)
+static bool get_nic_if_avail(int fd, struct alloted_s *names, int pid, char *intype, char *br, int allowed, char **nicname, char **cnic)
 {
 	off_t len, slen;
 	struct stat sb;
 	char *buf = NULL, *newline;
 	int ret, count = 0;
+	char *owner;
+	struct alloted_s *n;
 
-	cull_entries(fd, me, intype, br);
+	for (n=names; n!=NULL; n=n->next)
+		cull_entries(fd, n->name, intype, br);
 
 	if (allowed == 0)
 		return false;
+
+	owner = names->name;
 
 	if (fstat(fd, &sb) < 0) {
 		fprintf(stderr, "Failed to fstat: %s\n", strerror(errno));
@@ -417,17 +607,27 @@ static bool get_nic_if_avail(int fd, char *me, int pid, char *intype, char *br, 
 			return false;
 		}
 
-		count = count_entries(buf, len, me, intype, br);
-		if (count >= allowed)
-			return false;
+		owner = NULL;
+		for (n=names; n!=NULL; n=n->next) {
+			count = count_entries(buf, len, n->name, intype, br);
+
+			if (count >= n->allowed)
+				continue;
+
+			owner = n->name;
+			break;
+		}
 	}
+
+	if (owner == NULL)
+		return false;
 
 	if (!get_new_nicname(nicname, br, pid, cnic))
 		return false;
-	/* me  ' ' intype ' ' br ' ' *nicname + '\n' + '\0' */
-	slen = strlen(me) + strlen(intype) + strlen(br) + strlen(*nicname) + 5;
+	/* owner  ' ' intype ' ' br ' ' *nicname + '\n' + '\0' */
+	slen = strlen(owner) + strlen(intype) + strlen(br) + strlen(*nicname) + 5;
 	newline = alloca(slen);
-	ret = snprintf(newline, slen, "%s %s %s %s\n", me, intype, br, *nicname);
+	ret = snprintf(newline, slen, "%s %s %s %s\n", owner, intype, br, *nicname);
 	if (ret < 0 || ret >= slen) {
 		if (lxc_netdev_delete_by_name(*nicname) != 0)
 			fprintf(stderr, "Error unlinking %s!\n", *nicname);
@@ -475,7 +675,7 @@ again:
 static int rename_in_ns(int pid, char *oldname, char **newnamep)
 {
 	char nspath[MAXPATHLEN];
-	int fd = -1, ofd = -1, ret, ifindex;
+	int fd = -1, ofd = -1, ret, ifindex = -1;
 	bool grab_newname = false;
 
 	ret = snprintf(nspath, MAXPATHLEN, "/proc/%d/ns/net", getpid());
@@ -541,7 +741,7 @@ out_err:
 
 /*
  * If the caller (real uid, not effective uid) may read the
- * /proc/pid/net/ns, then it is either the caller's netns or one
+ * /proc/[pid]/ns/net, then it is either the caller's netns or one
  * which it created.
  */
 static bool may_access_netns(int pid)
@@ -589,19 +789,32 @@ int main(int argc, char *argv[])
 	char *cnic = NULL; // created nic name in container is returned here.
 	char *vethname = NULL;
 	int pid;
+	struct alloted_s *alloted = NULL;
 
+	/* set a sane env, because we are setuid-root */
+	if (clearenv() < 0) {
+		fprintf(stderr, "Failed to clear environment");
+		exit(1);
+	}
+	if (setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1) < 0) {
+		fprintf(stderr, "Failed to set PATH, exiting\n");
+		exit(1);
+	}
 	if ((me = get_username()) == NULL) {
 		fprintf(stderr, "Failed to get username\n");
 		exit(1);
 	}
 
-	if (argc < 4)
+	if (argc < 6)
 		usage(argv[0], true);
-	if (argc >= 5)
-		vethname = argv[4];
+	if (argc >= 7)
+		vethname = argv[6];
+
+	lxcpath = argv[1];
+	lxcname = argv[2];
 
 	errno = 0;
-	pid = (int) strtol(argv[1], NULL, 10);
+	pid = (int) strtol(argv[3], NULL, 10);
 	if (errno) {
 		fprintf(stderr, "Could not read pid: %s\n", argv[1]);
 		exit(1);
@@ -619,14 +832,16 @@ int main(int argc, char *argv[])
 
 	if (!may_access_netns(pid)) {
 		fprintf(stderr, "User %s may not modify netns for pid %d\n",
-				me, pid);
+			me, pid);
 		exit(1);
 	}
 
-	n = get_alloted(me, argv[2], argv[3]);
+	n = get_alloted(me, argv[4], argv[5], &alloted);
 	if (n > 0)
-		gotone = get_nic_if_avail(fd, me, pid, argv[2], argv[3], n, &nicname, &cnic);
+		gotone = get_nic_if_avail(fd, alloted, pid, argv[4], argv[5], n, &nicname, &cnic);
+
 	close(fd);
+	free_alloted(&alloted);
 	if (!gotone) {
 		fprintf(stderr, "Quota reached\n");
 		exit(1);

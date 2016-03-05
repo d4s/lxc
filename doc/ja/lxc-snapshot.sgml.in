@@ -72,7 +72,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
       <command>lxc-snapshot</command>
       <arg choice="req">-n, --name <replaceable>name</replaceable></arg>
       <arg choice="req">-r, -restore <replaceable>snapshot-name</replaceable></arg>
-      <arg choice="opt"> <replaceable> newname</replaceable></arg>
+      <arg choice="opt">-N, --newname <replaceable> newname</replaceable></arg>
     </cmdsynopsis>
   </refsynopsisdiv>
 
@@ -88,10 +88,12 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
     </para>
     <para>
       <!--
-    Snapshots are stored as snapshotted containers under a private configuration path.  For instance, if the container's configuration path is <filename>/var/lib/lxc</filename> and the container is <filename>c1</filename>, then the first snapshot will be stored as container <filename>snap0</filename> under configuration path <filename>/var/lib/lxcsnaps/c1</filename>.
-    -->
-      スナップショットは、専用の設定されたパス以下にスナップショット化されたコンテナとして保存されます。
-      例えば、もしコンテナパスが <filename>/var/lib/lxc</filename> で、コンテナが <filename>c1</filename> である場合、最初に取得するスナップショットは、パス <filename>/var/lib/lxcsnaps/c1</filename> の下の <filename>snap0</filename> として保存されます。
+      Snapshots are stored as snapshotted containers under the container's configuration path. For instance, if the container's configuration path is <filename>/var/lib/lxc</filename> and the container is <filename>c1</filename>, then the first snapshot will be stored as container <filename>snap0</filename> under the path <filename>/var/lib/lxc/c1/snaps</filename>.
+      If <filename>/var/lib/lxcsnaps</filename>, as used by LXC 1.0, already exists, then it will continue to be used.
+        -->
+      スナップショットはコンテナパス以下にスナップショット化されたコンテナとして保存されます。
+      例えば、もしコンテナパスが <filename>/var/lib/lxc</filename> で、コンテナが <filename>c1</filename> である場合、最初に取得するスナップショットは、パス <filename>/var/lib/lxc/c1/snaps</filename> の下の <filename>snap0</filename> として保存されます。
+      LXC 1.0 で使われていた <filename>/var/lib/lxcsnaps</filename> が存在する場合には、このディレクトリが引き続き使われます。
     </para>
   </refsect1>
 
@@ -162,16 +164,14 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
 	  </varlistentry>
 
 	  <varlistentry>
-	    <term> <option>newname</option> </term>
+	    <term> <option>-N, --newname</option> </term>
 	   <listitem>
-	    <para>
-              <!--
-                  When restoring a snapshot, the last optional argument is the name to use for the restored container.  If no name is given, then the original container will be destroyed and the restored container will take its place.  Note that deleting the original snapshot is not possible in the case of aufs, overlayfs or zfs backed snapshots.
-              -->
-              スナップショットをリストアする際、最後のオプション引数はリストアされたコンテナの名前として使用されます。
-              もし名前が与えられてない場合、元のコンテナが破壊され、リストアされるコンテナに置き換えられます。
-              スナップショット元を削除することは、aufs, overlayfs, zfs がバックエンドのスナップショットでは出来ないことに注意が必要です。
-            </para>
+            <para>
+	      <!-- When restoring a snapshot, the last optional argument if not given explicitly Via <command>\-\-newname</command> is the name to use for the restored container.  If the newname is identical to the original name of the container, then the original container will be destroyed and the restored container will take its place. Note that deleting the original snapshot is not possible in the case of aufs, overlayfs or zfs backed snapshots. -->
+	      スナップショットをリストアする際、<command>--newname</command> の値として明示的に指定しない場合でも、最後のオプション引数はリストアするコンテナの名前として使用します。
+	      もし newname が元のコンテナの名前と同じ場合、元のコンテナが削除され、リストアされるコンテナに置き換えられます。
+	      スナップショット元を削除することは、aufs, overlayfs, zfs がバックエンドのスナップショットではできないことに注意が必要です。
+	    </para>
 	   </listitem>
 	  </varlistentry>
 
@@ -184,7 +184,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
   &seealso;
 
   <refsect1>
-    <title>Author</title>
+    <title><!-- Author -->作者</title>
     <para>Serge Hallyn <email>serge.hallyn@ubuntu.com </email></para>
   </refsect1>
 

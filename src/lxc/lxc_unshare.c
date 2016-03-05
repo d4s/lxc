@@ -115,8 +115,8 @@ struct start_arg {
 	int *flags;
 	uid_t *uid;
 	bool setuid;
-        int want_default_mounts;
-        const char *want_hostname;
+	int want_default_mounts;
+	const char *want_hostname;
 };
 
 static int do_start(void *arg)
@@ -240,7 +240,7 @@ int main(int argc, char *argv[])
 
 	if (my_iflist) {
 		for (tmpif = my_iflist; tmpif; tmpif = tmpif->mi_next) {
-			if (lxc_netdev_move_by_name(tmpif->mi_ifname, pid) < 0)
+			if (lxc_netdev_move_by_name(tmpif->mi_ifname, pid, NULL) < 0)
 				fprintf(stderr,"Could not move interface %s into container %d: %s\n", tmpif->mi_ifname, pid, strerror(errno));
 		}
 	}

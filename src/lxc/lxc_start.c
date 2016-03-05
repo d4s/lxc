@@ -89,8 +89,7 @@ static int ensure_path(char **confpath, const char *path)
 	err = 0;
 
 err:
-	if (fullpath)
-		free(fullpath);
+	free(fullpath);
 	return err;
 }
 
@@ -182,7 +181,7 @@ static struct lxc_arguments my_args = {
 lxc-start start COMMAND in specified container NAME\n\
 \n\
 Options :\n\
-  -n, --name=NAME        NAME for name of the container\n\
+  -n, --name=NAME        NAME of the container\n\
   -d, --daemon           Daemonize the container (default)\n\
   -F, --foreground       Start with the current tty attached to /dev/console\n\
   -p, --pidfile=FILE     Create a file with the process id\n\
@@ -191,7 +190,7 @@ Options :\n\
   -L, --console-log=FILE Log container console output to FILE\n\
   -C, --close-all-fds    If any fds are inherited, close them\n\
                          If not specified, exit with failure instead\n\
-		         Note: --daemon implies --close-all-fds\n\
+                         Note: --daemon implies --close-all-fds\n\
   -s, --define KEY=VAL   Assign VAL to configuration variable KEY\n\
       --share-[net|ipc|uts]=NAME Share a namespace with another container or pid\n\
 ",
@@ -276,6 +275,11 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (c->is_running(c)) {
+		ERROR("Container is already running.");
+		err = 0;
+		goto out;
+	}
 	/*
 	 * We should use set_config_item() over &defines, which would handle
 	 * unset c->lxc_conf for us and let us not use lxc_config_define_load()
@@ -331,7 +335,10 @@ int main(int argc, char *argv[])
 	if (my_args.close_all_fds)
 		c->want_close_all_fds(c, true);
 
-	err = c->start(c, 0, args) ? 0 : 1;
+	if (args == default_args)
+		err = c->start(c, 0, NULL) ? 0 : 1;
+	else
+		err = c->start(c, 0, args) ? 0 : 1;
 
 	if (err) {
 		ERROR("The container failed to start.");

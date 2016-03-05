@@ -118,8 +118,10 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
             <para>
               <!--
               Comma separated list of cgroup controllers to setup.
+              If none is specified, all available controllers will be used.
               -->
               使用する cgroup コントローラのコンマ区切りのリスト。
+              何も指定されていない場合、全ての利用可能なコントローラが使われます。
             </para>
           </listitem>
         </varlistentry>
@@ -217,7 +219,7 @@ by KATOH Yasufumi <karma at jazz.email.ne.jp>
   &seealso;
 
   <refsect1>
-    <title>Author</title>
+    <title><!-- Author -->作者</title>
     <para>Stéphane Graber <email>stgraber@ubuntu.com</email></para>
   </refsect1>
 </refentry>

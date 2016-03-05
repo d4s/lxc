@@ -142,7 +142,7 @@ cache_precheck()
     printf "### cache_precheck(): doing some pre-start checks ...\n"
     # never hurts to have a fail-safe.
     [[ -n "${cacheroot//\/}" ]] \
-        || die 8 "\$cacheroot (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPERATORS, THIS IS *VERY* BAD!\n" "${cacheroot}"
+        || die 8 "\$cacheroot (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPARATORS, THIS IS *VERY* BAD!\n" "${cacheroot}"
 }
 
 #get latest stage3 tarball
@@ -160,18 +160,20 @@ cache_stage3()
         printf "Determining path to latest Gentoo %s (%s) stage3 archive...\n" "${arch}" "${variant}"
         printf " => downloading and processing %s\n" "${stage3_pointer}"
 
-        local stage3_latest_tarball=$(wget -q -O - "${stage3_pointer}" | tail -n1 ) \
+        local stage3_latest_tarball=$(wget -q -O - "${stage3_pointer}" | tail -n1 | cut -d' ' -f1) \
             || die 6 "Error: unable to fetch\n"
 
         printf " => Got: %s\n" "${stage3_latest_tarball}"
 
         printf "Downloading/untarring the actual stage3 tarball...\n"
-        wget -O - "${stage3_baseurl}/${stage3_latest_tarball}" | tar -xjpf - -C "${partialfs}" \
+        wget -O - "${stage3_baseurl}/${stage3_latest_tarball}" \
+            | tar -xjpf - --numeric-owner -C "${partialfs}" \
             || die 6 "Error: unable to fetch or untar\n"
         printf " => extracted to: %s\n" "${partialfs}"
     else
         printf "Extracting the stage3 tarball...\n"
-        tar -xpf "${tarball}" -C "${partialfs}" || die 6 "unable to untar ${tarball} to ${partialfs}"
+        tar -xpf "${tarball}" --numeric-owner -C "${partialfs}" \
+            || die 6 "unable to untar ${tarball} to ${partialfs}"
     fi
 
     #check if it chroots
@@ -318,13 +320,13 @@ container_precheck()
     printf "### container_precheck(): doing some pre-start checks ...\n"
     # never hurts to have a fail-safe.
     [[ -n "${name//\/}" ]] \
-        || die 8 "\$name (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPERATORS, THIS IS *VERY* BAD!\n" "${name}"
+        || die 8 "\$name (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPARATORS, THIS IS *VERY* BAD!\n" "${name}"
 
     [[ -n "${rootfs//\/}" ]] \
-        || die 8 "\$rootfs (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPERATORS, THIS IS *VERY* BAD!\n" "${rootfs}"
+        || die 8 "\$rootfs (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPARATORS, THIS IS *VERY* BAD!\n" "${rootfs}"
 
     [[ -n "${cachefs//\/}" ]] \
-        || die 8 "\$cachefs (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPERATORS, THIS IS *VERY* BAD!\n" "${cachefs}"
+        || die 8 "\$cachefs (%s) IS EMPTY OR MADE OF ONLY DIRECTORY SEPARATORS, THIS IS *VERY* BAD!\n" "${cachefs}"
 
     # check if the rootfs already exists
     [[ -d "${rootfs}/etc" ]] && die 18 "Error: \$rootfs (%s) already exists!" "${rootfs}"
@@ -338,7 +340,9 @@ container_precheck()
 container_rootfs()
 {
     printf "#### container_rootfs(): copying rootfs %s from cache %s ...\n" "${rootfs}" "${cachefs}"
-    tar -c -f - -C "${cachefs}" . | tar -x -p -f - -C "${rootfs}" || die 1 "Error: cache copy to rootfs failed"
+    tar -c -f - --numeric-owner -C "${cachefs}" . \
+        | tar -x -p -f - --numeric-owner -C "${rootfs}" \
+        || die 1 "Error: cache copy to rootfs failed"
 
     printf "chroot test..."
     chroot "${rootfs}" /bin/true || die 1 "Error: 'chroot %s /bin/true' failed"
@@ -469,7 +473,7 @@ lxc.mount.entry=${portage_distfiles_dir} ${portage_container/\//}/distfiles none
 #PKGDIR="\${PKGDIR}/amd64
 #or PKGDIR="\${PKGDIR}/hardened"
 EOF
-    printf " => portage stuff done, see /etc/portage/make.conf for additionnal tricks\n"
+    printf " => portage stuff done, see /etc/portage/make.conf for additional tricks\n"
 
 }
 
@@ -478,7 +482,9 @@ container_private_portage()
     #called from container_portage() do not call directly from container_setup
     printf "# untaring private portage to %s from %s ... \n" "${rootfs}/${portage_container}" "${portage_cache}"
     mkdir -p "${rootfs}/${portage_container}"
-    execute_exclusively portage 60 tar -xp --strip-components 1 -C "${rootfs}/${portage_container}" -f "${portage_cache}" \
+    execute_exclusively portage 60 \
+        tar -xp --strip-components 1 -C "${rootfs}/${portage_container}" \
+        -f "${portage_cache}" --numeric-owner \
         || die 2 "Error: unable to extract the portage tree.\n"
     store_user_message "container has its own portage tree at ${portage_container}"
     printf "=> done\n"
@@ -558,7 +564,7 @@ container_net()
     #Analyse network configuration in config
     container_conf_net "$path/config" >> "${rootfs}/etc/conf.d/net"
 
-        # found how much nic finaly have
+        # found how much nic finally have
     nic_count=$(( ${nic_last} + 1 ))
 
         # unless openrc manage a nic, we now have to force openrc to automatic
@@ -617,7 +623,7 @@ and man lxc.conf"
 container_hostname()
 {
     printf "#### container_hostname(): setting hostname... \n"
-    printf "hostnale=%s\n" "${name}" > "${rootfs}/etc/conf.d/hostname"
+    printf "hostname=\"%s\"\n" "${name}" > "${rootfs}/etc/conf.d/hostname"
     printf " => done.\n"
 }
 
@@ -635,11 +641,11 @@ container_auth()
     if [[ -r "${auth_key}" ]]; then
         printf " deploying auth_key %s for user %s ...\n" "${auth_key}" "${user}"
         mkdir -p "${rootfs}/${auth_home}/.ssh"
-        cat >> "${rootfs}/${auth_home}/.ssh/authorized_keys"
+        cat "${auth_key}" >> "${rootfs}/${auth_home}/.ssh/authorized_keys"
         chroot "${rootfs}" chown "${user}:" "${auth_home}/.ssh/authorized_keys"
         printf "  => inserted public key in %s/.ssh/authorized_keys\n" "${auth_home}"
         [[ -z "${forced_password}" ]] && unset password
-        store_user_message "${user} has the ssh key you gived us"
+        store_user_message "${user} has the ssh key you gave us"
     fi
 
     if [[ -n "${password}" ]]; then
@@ -674,6 +680,13 @@ container_conf()
 
     #at this point if there
     conf_file="${path}/config"
+
+    # if there is exactly one veth network entry, make sure it has an
+    # associated hwaddr.
+    nics=`grep -e '^lxc\.network\.type[ \t]*=[ \t]*veth' ${conf_file} | wc -l`
+    if [ $nics -eq 1 ]; then
+        grep -q "^lxc.network.hwaddr" ${conf_file} || sed -i -e "/^lxc\.network\.type[ \t]*=[ \t]*veth/a lxc.network.hwaddr = 00:16:3e:$(openssl rand -hex 3| sed 's/\(..\)/\1:/g; s/.$//')" ${conf_file}
+    fi
 
     if grep -q "^lxc.rootfs" "${conf_file}" ; then
         #lxc-create already provided one
@@ -769,7 +782,7 @@ user="root"
 password="toor"
 tty=1
 settings="common"
-options=$(getopt -o hp:n:a:FcPv:t:S:u:w:s:m: -l help,rootfs:,path:,name:,arch:,flush-cache,cache-only,private-portage,variant:,portage-dir:,tarball:,auth_key:,user:,autologin,password:,settings:,mirror:,tty: -- "$@")
+options=$(getopt -o hp:n:a:FcPv:t:S:u:w:s:m: -l help,rootfs:,path:,name:,arch:,flush-cache,cache-only,private-portage,variant:,portage-dir:,tarball:,auth-key:,user:,autologin,password:,settings:,mirror:,tty: -- "$@")
 
 eval set -- "$options"
 
@@ -782,7 +795,7 @@ do
     -n|--name)             name=$2; shift 2;;
     -a|--arch)             arch=$2; shift 2;;
     -F|--flush-cache)      flush_cache=1; shift 1;;
-    -c|--cache-only)       cache_only=1; shitf 1;;
+    -c|--cache-only)       cache_only=1; shift 1;;
     -P|--private-portage)  private_portage=1; shift 1;;
     -v|--variant)          variant=$2; shift 2;;
     --portage-dir)         portage_dir=$2; shift 2;;
@@ -792,6 +805,7 @@ do
     -w|--password)         forced_password=1; password=$2; shift 2;;
     -s|--settings)         settings=$2; shift 2;;
     -m|--mirror)           mirror=$2; shift 2;;
+    --container-cache)  containercache=$2; shift 2;;
     --tty)                 [[ $2 -lt 6 ]] && tty=$2; shift 2;;
     --autologin)            autologin=1; shift 1;;
     --) shift 1; break ;;
@@ -799,7 +813,8 @@ do
     esac
 done
 
-cacheroot="@LOCALSTATEDIR@/cache/lxc/gentoo"
+# Allow the cache path to be set by environment variable
+cacheroot="${LXC_CACHE_PATH:-"@LOCALSTATEDIR@/cache/lxc"}/gentoo"
 portage_cache="${cacheroot}/portage.tbz"
 cachefs="${cacheroot}/rootfs-${arch}-${variant}"
 

@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -75,6 +76,82 @@
 
 lxc_log_define(lxc_attach, lxc);
 
+int lsm_set_label_at(int procfd, int on_exec, char* lsm_label) {
+	int labelfd = -1;
+	int ret = 0;
+	const char* name;
+	char* command = NULL;
+
+	name = lsm_name();
+
+	if (strcmp(name, "nop") == 0)
+		goto out;
+
+	if (strcmp(name, "none") == 0)
+		goto out;
+
+	/* We don't support on-exec with AppArmor */
+	if (strcmp(name, "AppArmor") == 0)
+		on_exec = 0;
+
+	if (on_exec) {
+		labelfd = openat(procfd, "self/attr/exec", O_RDWR);
+	}
+	else {
+		labelfd = openat(procfd, "self/attr/current", O_RDWR);
+	}
+
+	if (labelfd < 0) {
+		SYSERROR("Unable to open LSM label");
+		ret = -1;
+		goto out;
+	}
+
+	if (strcmp(name, "AppArmor") == 0) {
+		int size;
+
+		command = malloc(strlen(lsm_label) + strlen("changeprofile ") + 1);
+		if (!command) {
+			SYSERROR("Failed to write apparmor profile");
+			ret = -1;
+			goto out;
+		}
+
+		size = sprintf(command, "changeprofile %s", lsm_label);
+		if (size < 0) {
+			SYSERROR("Failed to write apparmor profile");
+			ret = -1;
+			goto out;
+		}
+
+		if (write(labelfd, command, size + 1) < 0) {
+			SYSERROR("Unable to set LSM label");
+			ret = -1;
+			goto out;
+		}
+	}
+	else if (strcmp(name, "SELinux") == 0) {
+		if (write(labelfd, lsm_label, strlen(lsm_label) + 1) < 0) {
+			SYSERROR("Unable to set LSM label");
+			ret = -1;
+			goto out;
+		}
+	}
+	else {
+		ERROR("Unable to restore label for unknown LSM: %s", name);
+		ret = -1;
+		goto out;
+	}
+
+out:
+	free(command);
+
+	if (labelfd != -1)
+		close(labelfd);
+
+	return ret;
+}
+
 static struct lxc_proc_context_info *lxc_proc_get_context_info(pid_t pid)
 {
 	struct lxc_proc_context_info *info = calloc(1, sizeof(*info));
@@ -107,8 +184,7 @@ static struct lxc_proc_context_info *lxc_proc_get_context_info(pid_t pid)
 		}
 	}
 
-	if (line)
-		free(line);
+	free(line);
 	fclose(proc_file);
 
 	if (!found) {
@@ -128,8 +204,7 @@ out_error:
 
 static void lxc_proc_put_context_info(struct lxc_proc_context_info *ctx)
 {
-	if (ctx->lsm_label)
-		free(ctx->lsm_label);
+	free(ctx->lsm_label);
 	if (ctx->container)
 		lxc_container_put(ctx->container);
 	free(ctx);
@@ -335,23 +410,8 @@ static int lxc_attach_set_environment(enum lxc_attach_env_policy_t policy, char*
 		 * number of C programs out there that just assume
 		 * that getenv("PATH") is never NULL and then die a
 		 * painful segfault death. */
-		if (!path_kept) {
-#ifdef HAVE_CONFSTR
-			size_t n;
-			char *path_env;
-
-			n = confstr(_CS_PATH, NULL, 0);
-			path_env = malloc(n);
-			if (path_env) {
-				confstr(_CS_PATH, path_env, n);
-				setenv("PATH", path_env, 1);
-				free(path_env);
-			}
-			/* don't error out, this is just an extra service */
-#else
+		if (!path_kept)
 			setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
-#endif
-		}
 	}
 
 	if (putenv("container=lxc")) {
@@ -458,8 +518,7 @@ static char *lxc_attach_getpwshell(uid_t uid)
 			}
 			if (!token)
 				continue;
-			if (result)
-				free(result);
+			free(result);
 			result = strdup(token);
 
 			/* sanity check that there are no fields after that */
@@ -587,12 +646,13 @@ struct attach_clone_payload {
 	struct lxc_proc_context_info* init_ctx;
 	lxc_attach_exec_t exec_function;
 	void* exec_payload;
+	int procfd;
 };
 
 static int attach_child_main(void* data);
 
 /* help the optimizer along if it doesn't know that exit always exits */
-#define rexit(c)  do { int __c = (c); exit(__c); return __c; } while(0)
+#define rexit(c)  do { int __c = (c); _exit(__c); return __c; } while(0)
 
 /* define default options if no options are supplied by the user */
 static lxc_attach_options_t attach_static_default_options = LXC_ATTACH_OPTIONS_DEFAULT;
@@ -601,7 +661,8 @@ static bool fetch_seccomp(const char *name, const char *lxcpath,
 		struct lxc_proc_context_info *i, lxc_attach_options_t *options)
 {
 	struct lxc_container *c;
-	
+	char *path;
+
 	if (!(options->namespaces & CLONE_NEWNS) || !(options->attach_flags & LXC_ATTACH_LSM))
 		return true;
 
@@ -609,8 +670,26 @@ static bool fetch_seccomp(const char *name, const char *lxcpath,
 	if (!c)
 		return false;
 	i->container = c;
-	if (!c->lxc_conf)
+
+	/* Initialize an empty lxc_conf */
+	if (!c->set_config_item(c, "lxc.seccomp", "")) {
 		return false;
+	}
+
+	/* Fetch the current profile path over the cmd interface */
+	path = c->get_running_config_item(c, "lxc.seccomp");
+	if (!path) {
+		return true;
+	}
+
+	/* Copy the value into the new lxc_conf */
+	if (!c->set_config_item(c, "lxc.seccomp", path)) {
+		free(path);
+		return false;
+	}
+	free(path);
+
+	/* Attempt to parse the resulting config */
 	if (lxc_read_seccomp_config(c->lxc_conf) < 0) {
 		ERROR("Error reading seccomp policy");
 		return false;
@@ -639,7 +718,9 @@ int lxc_attach(const char* name, const char* lxcpath, lxc_attach_exec_t exec_fun
 	char* cwd;
 	char* new_cwd;
 	int ipc_sockets[2];
+	int procfd;
 	signed long personality;
+	bool unshare_cgns = false;
 
 	if (!options)
 		options = &attach_static_default_options;
@@ -743,7 +824,7 @@ int lxc_attach(const char* name, const char* lxcpath, lxc_attach_exec_t exec_fun
 	if (pid) {
 		pid_t to_cleanup_pid = pid;
 
-		/* inital thread, we close the socket that is for the
+		/* initial thread, we close the socket that is for the
 		 * subprocesses
 		 */
 		close(ipc_sockets[1]);
@@ -769,6 +850,12 @@ int lxc_attach(const char* name, const char* lxcpath, lxc_attach_exec_t exec_fun
 			if (ret != 0)
 				ERROR("error using IPC to receive pid of attached process");
 			goto cleanup_error;
+		}
+
+		/* ignore SIGKILL (CTRL-C) and SIGQUIT (CTRL-\) - issue #313 */
+		if (options->stdin_fd == 0) {
+			signal(SIGINT, SIG_IGN);
+			signal(SIGQUIT, SIG_IGN);
 		}
 
 		/* reap intermediate process */
@@ -844,6 +931,16 @@ int lxc_attach(const char* name, const char* lxcpath, lxc_attach_exec_t exec_fun
 		rexit(-1);
 	}
 
+	if (options->attach_flags & LXC_ATTACH_MOVE_TO_CGROUP && cgns_supported())
+		unshare_cgns = true;
+
+	procfd = open("/proc", O_DIRECTORY | O_RDONLY);
+	if (procfd < 0) {
+		SYSERROR("Unable to open /proc");
+		shutdown(ipc_sockets[1], SHUT_RDWR);
+		rexit(-1);
+	}
+
 	/* attach now, create another subprocess later, since pid namespaces
 	 * only really affect the children of the current process
 	 */
@@ -864,6 +961,14 @@ int lxc_attach(const char* name, const char* lxcpath, lxc_attach_exec_t exec_fun
 		WARN("could not change directory to '%s'", new_cwd);
 	free(cwd);
 
+	if (unshare_cgns) {
+		if (unshare(CLONE_NEWCGROUP) != 0) {
+			SYSERROR("cgroupns unshare: permission denied");
+			rexit(-1);
+		}
+		INFO("Unshared cgroup namespace");
+	}
+
 	/* now create the real child process */
 	{
 		struct attach_clone_payload payload = {
@@ -871,7 +976,8 @@ int lxc_attach(const char* name, const char* lxcpath, lxc_attach_exec_t exec_fun
 			.options = options,
 			.init_ctx = init_ctx,
 			.exec_function = exec_function,
-			.exec_payload = exec_payload
+			.exec_payload = exec_payload,
+			.procfd = procfd
 		};
 		/* We use clone_parent here to make this subprocess a direct child of
 		 * the initial process. Then this intermediate process can exit and
@@ -909,6 +1015,7 @@ static int attach_child_main(void* data)
 {
 	struct attach_clone_payload* payload = (struct attach_clone_payload*)data;
 	int ipc_socket = payload->ipc_socket;
+	int procfd = payload->procfd;
 	lxc_attach_options_t* options = payload->options;
 	struct lxc_proc_context_info* init_ctx = payload->init_ctx;
 #if HAVE_SYS_PERSONALITY_H
@@ -995,6 +1102,21 @@ static int attach_child_main(void* data)
 	if (options->gid != (gid_t)-1)
 		new_gid = options->gid;
 
+	/* setup the control tty */
+	if (options->stdin_fd && isatty(options->stdin_fd)) {
+		if (setsid() < 0) {
+			SYSERROR("unable to setsid");
+			shutdown(ipc_socket, SHUT_RDWR);
+			rexit(-1);
+		}
+
+		if (ioctl(options->stdin_fd, TIOCSCTTY, (char *)NULL) < 0) {
+			SYSERROR("unable to TIOCSTTY");
+			shutdown(ipc_socket, SHUT_RDWR);
+			rexit(-1);
+		}
+	}
+
 	/* try to set the uid/gid combination */
 	if ((new_gid != 0 || options->namespaces & CLONE_NEWUSER)) {
 		if (setgid(new_gid) || setgroups(0, NULL)) {
@@ -1034,12 +1156,11 @@ static int attach_child_main(void* data)
 	close(ipc_socket);
 
 	/* set new apparmor profile/selinux context */
-	if ((options->namespaces & CLONE_NEWNS) && (options->attach_flags & LXC_ATTACH_LSM)) {
+	if ((options->namespaces & CLONE_NEWNS) && (options->attach_flags & LXC_ATTACH_LSM) && init_ctx->lsm_label) {
 		int on_exec;
 
 		on_exec = options->attach_flags & LXC_ATTACH_LSM_EXEC ? 1 : 0;
-		ret = lsm_process_label_set(init_ctx->lsm_label, 0, on_exec);
-		if (ret < 0) {
+		if (lsm_set_label_at(procfd, on_exec, init_ctx->lsm_label) < 0) {
 			rexit(-1);
 		}
 	}
@@ -1090,6 +1211,9 @@ static int attach_child_main(void* data)
 		}
 	}
 
+	/* we don't need proc anymore */
+	close(procfd);
+
 	/* we're done, so we can now do whatever the user intended us to do */
 	rexit(payload->exec_function(payload->exec_payload));
 }
@@ -1128,12 +1252,12 @@ int lxc_attach_run_shell(void* payload)
 		user_shell = passwd->pw_shell;
 
 	if (user_shell)
-		execlp(user_shell, user_shell, NULL);
+		execlp(user_shell, user_shell, (char *)NULL);
 
 	/* executed if either no passwd entry or execvp fails,
 	 * we will fall back on /bin/sh as a default shell
 	 */
-	execlp("/bin/sh", "/bin/sh", NULL);
+	execlp("/bin/sh", "/bin/sh", (char *)NULL);
 	SYSERROR("failed to exec shell");
 	return -1;
 }

@@ -38,6 +38,7 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <net/if.h>
+#include <poll.h>
 
 #include "error.h"
 #include "af_unix.h"
@@ -131,6 +132,16 @@ void lxc_monitor_send_state(const char *name, lxc_state_t state, const char *lxc
 	lxc_monitor_fifo_send(&msg, lxcpath);
 }
 
+void lxc_monitor_send_exit_code(const char *name, int exit_code, const char *lxcpath)
+{
+	struct lxc_msg msg = { .type = lxc_msg_exit_code,
+			       .value = exit_code };
+	strncpy(msg.name, name, sizeof(msg.name));
+	msg.name[sizeof(msg.name) - 1] = 0;
+
+	lxc_monitor_fifo_send(&msg, lxcpath);
+}
+
 
 /* routines used by monitor subscribers (lxc-monitor) */
 int lxc_monitor_close(int fd)
@@ -171,7 +182,7 @@ int lxc_monitor_sock_name(const char *lxcpath, struct sockaddr_un *addr) {
 int lxc_monitor_open(const char *lxcpath)
 {
 	struct sockaddr_un addr;
-	int fd,ret;
+	int fd,ret = 0;
 	int retry,backoff_ms[] = {10, 50, 100};
 	size_t len;
 
@@ -209,19 +220,13 @@ err1:
 	return ret;
 }
 
-int lxc_monitor_read_fdset(fd_set *rfds, int nfds, struct lxc_msg *msg,
+int lxc_monitor_read_fdset(struct pollfd *fds, nfds_t nfds, struct lxc_msg *msg,
 			   int timeout)
 {
-	struct timeval tval,*tv = NULL;
-	int ret,i;
+	long i;
+	int ret;
 
-	if (timeout != -1) {
-		tv = &tval;
-		tv->tv_sec = timeout;
-		tv->tv_usec = 0;
-	}
-
-	ret = select(nfds, rfds, NULL, NULL, tv);
+	ret = poll(fds, nfds, timeout * 1000);
 	if (ret == -1)
 		return -1;
 	else if (ret == 0)
@@ -231,8 +236,9 @@ int lxc_monitor_read_fdset(fd_set *rfds, int nfds, struct lxc_msg *msg,
 	 * for when this routine is called again
 	 */
 	for (i = 0; i < nfds; i++) {
-		if (FD_ISSET(i, rfds)) {
-			ret = recv(i, msg, sizeof(*msg), 0);
+		if (fds[i].revents != 0) {
+			fds[i].revents = 0;
+			ret = recv(fds[i].fd, msg, sizeof(*msg), 0);
 			if (ret <= 0) {
 				SYSERROR("client failed to recv (monitord died?) %s",
 					 strerror(errno));
@@ -247,12 +253,13 @@ int lxc_monitor_read_fdset(fd_set *rfds, int nfds, struct lxc_msg *msg,
 
 int lxc_monitor_read_timeout(int fd, struct lxc_msg *msg, int timeout)
 {
-	fd_set rfds;
+	struct pollfd fds;
 
-	FD_ZERO(&rfds);
-	FD_SET(fd, &rfds);
+	fds.fd = fd;
+	fds.events = POLLIN | POLLPRI;
+	fds.revents = 0;
 
-	return lxc_monitor_read_fdset(&rfds, fd+1, msg, timeout);
+	return lxc_monitor_read_fdset(&fds, 1, msg, timeout);
 }
 
 int lxc_monitor_read(int fd, struct lxc_msg *msg)
@@ -321,13 +328,9 @@ int lxc_monitord_spawn(const char *lxcpath)
 		SYSERROR("failed to setsid");
 		exit(EXIT_FAILURE);
 	}
-	lxc_check_inherited(NULL, pipefd[1]);
-	close(0);
-	close(1);
-	close(2);
-	open("/dev/null", O_RDONLY);
-	open("/dev/null", O_RDWR);
-	open("/dev/null", O_RDWR);
+	lxc_check_inherited(NULL, true, pipefd[1]);
+	if (null_stdfds() < 0)
+		exit(EXIT_FAILURE);
 	close(pipefd[0]);
 	sprintf(pipefd_str, "%d", pipefd[1]);
 	execvp(args[0], args);

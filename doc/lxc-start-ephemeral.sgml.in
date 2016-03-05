@@ -53,6 +53,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <arg choice="opt">--bdir</arg>
       <arg choice="opt">--user</arg>
       <arg choice="opt">--key</arg>
+      <arg choice="opt">--storage-type</arg>
       <arg choice="opt">--union-type</arg>
       <arg choice="opt">--keep-data</arg>
       <arg choice="opt">COMMAND</arg>
@@ -72,7 +73,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
     <variablelist>
       <varlistentry>
         <term>
-          <option>-o</option>
+          <option>-o, --orig <replaceable>orig</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -83,7 +84,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>-n</optional></option>
+          <option>-n, --name <replaceable>name</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -94,7 +95,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>-d</optional></option>
+          <option>-d, --daemon</option>
         </term>
         <listitem>
           <para>
@@ -106,7 +107,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>--bdir</optional></option>
+          <option>-b, --bdir <replaceable>bdir</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -118,7 +119,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>--user</optional></option>
+          <option>-u, --user <replaceable>user</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -130,7 +131,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>--key</optional></option>
+          <option>-S, --key <replaceable>key</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -141,7 +142,18 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>--union-type</optional></option>
+          <option>-s, --storage-type <replaceable>storage type</replaceable></option>
+        </term>
+        <listitem>
+          <para>
+            Specify the type of storage used by the container. Valid types are tmpfs or dir.
+          </para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term>
+          <option>-U, --union-type <replaceable>union type</replaceable></option>
         </term>
         <listitem>
           <para>
@@ -153,7 +165,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>--keep-data</optional></option>
+          <option>-k, --keep-data</option>
         </term>
         <listitem>
           <para>
@@ -166,13 +178,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
       <varlistentry>
         <term>
-          <option><optional>COMMAND</optional></option>
+          <option>COMMAND</option>
         </term>
         <listitem>
           <para>
             Immediately run the provided command in the container.
-            This currently uses ssh (not attach) and is incompatible
-            with daemon mode.
+            This uses attach if the kernel supports it, otherwise uses ssh.
+            This is incompatible with daemon mode.
           </para>
         </listitem>
       </varlistentry>
@@ -213,6 +225,14 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
         </listitem>
       </varlistentry>
     </variablelist>
+  </refsect1>
+
+  <refsect1>
+    <title>Notes</title>
+    <para>
+    <command>lxc-start-ephemeral</command> is deprecated in favor of
+    <command>lxc-copy</command>.
+    </para>
   </refsect1>
 
   &seealso;

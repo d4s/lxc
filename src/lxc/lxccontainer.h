@@ -49,8 +49,14 @@ struct lxc_snapshot;
 
 struct lxc_lock;
 
+struct migrate_opts;
+
 /*!
  * An LXC container.
+ *
+ * Note that changing the order of struct members is an API change, as callers
+ * will end up having the wrong offset when calling a function.  So when making
+ * changes, whenever possible stick to simply appending new members.
  */
 struct lxc_container {
 	// private fields
@@ -216,25 +222,24 @@ struct lxc_container {
 	bool (*stop)(struct lxc_container *c);
 
 	/*!
-	 * \brief Determine if the container wants to run disconnected
+	 * \brief Change whether the container wants to run disconnected
 	 * from the terminal.
 	 *
 	 * \param c Container.
 	 * \param state Value for the daemonize bit (0 or 1).
 	 *
-	 * \return \c true if container wants to be daemonised, else \c false.
+	 * \return \c true on success, else \c false.
 	 */
 	bool (*want_daemonize)(struct lxc_container *c, bool state);
 
 	/*!
-	 * \brief Determine whether container wishes all file descriptors
+	 * \brief Change whether the container wishes all file descriptors
 	 *  to be closed on startup.
 	 *
 	 * \param c Container.
 	 * \param state Value for the close_all_fds bit (0 or 1).
 	 *
-	 * \return \c true if container wants all file descriptors closed,
-	 *  else \c false.
+	 * \return \c true on success, else \c false.
 	 */
 	bool (*want_close_all_fds)(struct lxc_container *c, bool state);
 
@@ -284,17 +289,6 @@ struct lxc_container {
 	 * \note Container must be stopped and have no dependent snapshots.
 	 */
 	bool (*destroy)(struct lxc_container *c);
-
-	/*!
-	 * \brief Delete the container and all its snapshots.
-	 *
-	 * \param c Container.
-	 *
-	 * \return \c true on success, else \c false.
-	 *
-	 * \note Container must be stopped.
-	 */
-	bool (*destroy_with_snapshots)(struct lxc_container *c);
 
 	/*!
 	 * \brief Save configuaration to a file.
@@ -580,7 +574,7 @@ struct lxc_container {
 	 * \param c Container.
 	 * \param[in,out] ttynum Terminal number to attempt to allocate,
 	 *  or \c -1 to allocate the first available tty.
-	 * \param[out] masterfd File descriptor refering to the master side of the pty.
+	 * \param[out] masterfd File descriptor referring to the master side of the pty.
 	 *
 	 * \return tty file descriptor number on success, or \c -1 on
 	 *  failure.
@@ -718,15 +712,6 @@ struct lxc_container {
 	bool (*snapshot_destroy)(struct lxc_container *c, const char *snapname);
 
 	/*!
-	 * \brief Destroy all the container's snapshot.
-	 *
-	 * \param c Container.
-	 *
-	 * \return \c true on success, else \c false.
-	 */
-	bool (*snapshot_destroy_all)(struct lxc_container *c);
-
-	/*!
 	 * \brief Determine if the caller may control the container.
 	 *
 	 * \param c Container.
@@ -760,6 +745,84 @@ struct lxc_container {
 	 * \return \c true on success, else \c false.
 	 */
 	bool (*remove_device_node)(struct lxc_container *c, const char *src_path, const char *dest_path);
+
+	/* Post LXC-1.0 additions */
+
+	/*!
+	 * \brief Add specified netdev to the container.
+	 *
+	 * \param c Container.
+	 * \param dev name of net device.
+	 *
+	 * \return \c true on success, else \c false.
+	 */
+	bool (*attach_interface)(struct lxc_container *c, const char *dev, const char *dst_dev);
+
+	/*!
+	 * \brief Remove specified netdev from the container.
+	 *
+	 * \param c Container.
+	 * \param dev name of net device.
+	 *
+	 * \return \c true on success, else \c false.
+	 */
+	bool (*detach_interface)(struct lxc_container *c, const char *dev, const char *dst_dev);
+	/*!
+	 * \brief Checkpoint a container.
+	 *
+	 * \param c Container.
+	 * \param directory The directory to dump the container to.
+	 * \param stop Whether or not to stop the container after checkpointing.
+	 * \param verbose Enable criu's verbose logs.
+	 *
+	 * \return \c true on success, else \c false.
+	 * present at compile time).
+	 */
+	bool (*checkpoint)(struct lxc_container *c, char *directory, bool stop, bool verbose);
+
+	/*!
+	 * \brief Restore a container from a checkpoint.
+	 *
+	 * \param c Container.
+	 * \param directory The directory to restore the container from.
+	 * \param verbose Enable criu's verbose logs.
+	 *
+	 * \return \c true on success, else \c false.
+	 *
+	 */
+	bool (*restore)(struct lxc_container *c, char *directory, bool verbose);
+
+	/*!
+	 * \brief Delete the container and all its snapshots.
+	 *
+	 * \param c Container.
+	 *
+	 * \return \c true on success, else \c false.
+	 *
+	 * \note Container must be stopped.
+	 */
+	bool (*destroy_with_snapshots)(struct lxc_container *c);
+
+	/*!
+	 * \brief Destroy all the container's snapshot.
+	 *
+	 * \param c Container.
+	 *
+	 * \return \c true on success, else \c false.
+	 */
+	bool (*snapshot_destroy_all)(struct lxc_container *c);
+
+	/* Post LXC-1.1 additions */
+	/*!
+	 * \brief An API call to perform various migration operations
+	 *
+	 * \param cmd One of the MIGRATE_ contstants.
+	 * \param opts A migrate_opts struct filled with relevant options.
+	 * \param size The size of the migrate_opts struct, i.e. sizeof(struct migrate_opts).
+	 *
+	 * \return \c 0 on success, nonzero on failure.
+	 */
+	int (*migrate)(struct lxc_container *c, unsigned int cmd, struct migrate_opts *opts, unsigned int size);
 };
 
 /*!
@@ -783,17 +846,42 @@ struct lxc_snapshot {
  * \brief Specifications for how to create a new backing store
  */
 struct bdev_specs {
-    char *fstype; /*!< Filesystem type */
-    uint64_t fssize;  /*!< Filesystem size in bytes */
-    struct {
-        char *zfsroot; /*!< ZFS root path */
-    } zfs;
-    struct {
-        char *vg; /*!< LVM Volume Group name */
-        char *lv; /*!< LVM Logical Volume name */
-        char *thinpool; /*!< LVM thin pool to use, if any */
-    } lvm;
-    char *dir; /*!< Directory path */
+	char *fstype; /*!< Filesystem type */
+	uint64_t fssize;  /*!< Filesystem size in bytes */
+	struct {
+		char *zfsroot; /*!< ZFS root path */
+	} zfs;
+	struct {
+		char *vg; /*!< LVM Volume Group name */
+		char *lv; /*!< LVM Logical Volume name */
+		char *thinpool; /*!< LVM thin pool to use, if any */
+	} lvm;
+	char *dir; /*!< Directory path */
+	struct {
+		char *rbdname; /*!< RBD image name */
+		char *rbdpool; /*!< Ceph pool name */
+	} rbd;
+};
+
+/*!
+ * \brief Commands for the migrate API call.
+ */
+enum {
+	MIGRATE_PRE_DUMP,
+	MIGRATE_DUMP,
+	MIGRATE_RESTORE,
+};
+
+/*!
+ * \brief Options for the migrate API call.
+ */
+struct migrate_opts {
+	/* new members should be added at the end */
+	char *directory;
+	bool verbose;
+
+	bool stop; /* stop the container after dump? */
+	char *predump_dir; /* relative to directory above */
 };
 
 /*!

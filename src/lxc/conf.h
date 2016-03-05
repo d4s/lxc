@@ -25,6 +25,7 @@
 
 #include "config.h"
 
+#include <stdio.h>
 #include <netinet/in.h>
 #include <net/if.h>
 #include <sys/param.h>
@@ -99,7 +100,7 @@ struct ifla_vlan {
 };
 
 struct ifla_macvlan {
-	int mode; /* private, vepa, bridge */
+	int mode; /* private, vepa, bridge, passthru */
 };
 
 union netdev_p {
@@ -140,7 +141,7 @@ struct lxc_netdev {
 /*
  * Defines a generic struct to configure the control group.
  * It is up to the programmer to specify the right subsystem.
- * @subsystem : the targetted subsystem
+ * @subsystem : the targeted subsystem
  * @value     : the value to set
  */
 struct lxc_cgroup {
@@ -184,7 +185,7 @@ struct lxc_pty_info {
 
 /*
  * Defines the number of tty configured and contains the
- * instanciated ptys
+ * instantiated ptys
  * @nbtty = number of configured ttys
  */
 struct lxc_tty_info {
@@ -216,13 +217,13 @@ struct lxc_console {
 /*
  * Defines a structure to store the rootfs location, the
  * optionals pivot_root, rootfs mount paths
- * @rootfs     : a path to the rootfs
- * @pivot_root : a path to a pivot_root location to be used
+ * @path       : the rootfs source (directory or device)
+ * @mount      : where it is mounted
+ * @options    : mount options
  */
 struct lxc_rootfs {
 	char *path;
 	char *mount;
-	char *pivot;
 	char *options;
 };
 
@@ -236,6 +237,7 @@ enum {
 
 	LXC_AUTO_SYS_RW               = 0x004,   /* /sys */
 	LXC_AUTO_SYS_RO               = 0x008,   /* /sys read-only */
+	LXC_AUTO_SYS_MIXED            = 0x00C,   /* /sys read-only and /sys/class/net read-write */
 	LXC_AUTO_SYS_MASK             = 0x00C,
 
 	LXC_AUTO_CGROUP_RO            = 0x010,   /* /sys/fs/cgroup (partial mount, read-only) */
@@ -277,7 +279,8 @@ enum {
  */
 enum lxchooks {
 	LXCHOOK_PRESTART, LXCHOOK_PREMOUNT, LXCHOOK_MOUNT, LXCHOOK_AUTODEV,
-	LXCHOOK_START, LXCHOOK_POSTSTOP, LXCHOOK_CLONE, NUM_LXC_HOOKS};
+	LXCHOOK_START, LXCHOOK_STOP, LXCHOOK_POSTSTOP, LXCHOOK_CLONE, LXCHOOK_DESTROY,
+	NUM_LXC_HOOKS};
 extern char *lxchook_names[NUM_LXC_HOOKS];
 
 struct saved_nic {
@@ -304,6 +307,7 @@ struct lxc_conf {
 	struct lxc_list caps;
 	struct lxc_list keepcaps;
 	struct lxc_tty_info tty_info;
+	char *pty_names; // comma-separated list of lxc.tty pty names
 	struct lxc_console console;
 	struct lxc_rootfs rootfs;
 	char *ttydir;
@@ -311,6 +315,7 @@ struct lxc_conf {
 	struct lxc_list hooks[NUM_LXC_HOOKS];
 
 	char *lsm_aa_profile;
+	int lsm_aa_allow_incomplete;
 	char *lsm_se_context;
 	int tmp_umount_proc;
 	char *seccomp;  // filename with the seccomp rules
@@ -320,6 +325,7 @@ struct lxc_conf {
 	int maincmd_fd;
 	int autodev;  // if 1, mount and fill a /dev at start
 	int haltsignal; // signal used to halt container
+	int rebootsignal; // signal used to reboot container
 	int stopsignal; // signal used to hard stop container
 	int kmsg;  // if 1, create /dev/kmsg symlink
 	char *rcfile;	// Copy of the top level rcfile we read
@@ -331,6 +337,7 @@ struct lxc_conf {
 	// store the config file specified values here.
 	char *logfile;  // the logfile as specifed in config
 	int loglevel;   // loglevel as specifed in config (if any)
+	int logfd;
 
 	int inherit_ns_fd[LXC_NS_MAX];
 
@@ -339,6 +346,9 @@ struct lxc_conf {
 	int start_order;
 	struct lxc_list groups;
 	int nbd_idx;
+
+	/* unshare the mount namespace in the monitor */
+	int monitor_unshare;
 
 	/* set to true when rootfs has been setup */
 	bool rootfs_setup;
@@ -355,7 +365,24 @@ struct lxc_conf {
 	/* text representation of the config file */
 	char *unexpanded_config;
 	size_t unexpanded_len, unexpanded_alloced;
+
+	/* init command */
+	char *init_cmd;
+
+	/* if running in a new user namespace, the UID/GID that init and COMMAND
+	 * should run under when using lxc-execute */
+	uid_t init_uid;
+	gid_t init_gid;
+
+	/* indicator if the container will be destroyed on shutdown */
+	int ephemeral;
 };
+
+#ifdef HAVE_TLS
+extern __thread struct lxc_conf *current_config;
+#else
+extern struct lxc_conf *current_config;
+#endif
 
 int run_lxc_hooks(const char *name, char *hook, struct lxc_conf *conf,
 		  const char *lxcpath, char *argv[]);
@@ -373,7 +400,8 @@ extern int pin_rootfs(const char *rootfs);
 extern int lxc_requests_empty_network(struct lxc_handler *handler);
 extern int lxc_create_network(struct lxc_handler *handler);
 extern void lxc_delete_network(struct lxc_handler *handler);
-extern int lxc_assign_network(struct lxc_list *networks, pid_t pid);
+extern int lxc_assign_network(const char *lxcpath, char *lxcname,
+			      struct lxc_list *networks, pid_t pid);
 extern int lxc_map_ids(struct lxc_list *idmap, pid_t pid);
 extern int lxc_find_gateway_addresses(struct lxc_handler *handler);
 
@@ -413,5 +441,8 @@ extern int userns_exec_1(struct lxc_conf *conf, int (*fn)(void *), void *data);
 extern int parse_mntopts(const char *mntopts, unsigned long *mntflags,
 			 char **mntdata);
 extern void tmp_proc_unmount(struct lxc_conf *lxc_conf);
+void remount_all_slave(void);
 extern void suggest_default_idmap(void);
+FILE *write_mount_file(struct lxc_list *mount);
+struct lxc_list *sort_cgroup_settings(struct lxc_list* cgroup_settings);
 #endif

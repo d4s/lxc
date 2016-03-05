@@ -32,15 +32,22 @@ struct lxc_handler;
 struct lxc_conf;
 struct lxc_list;
 
+typedef enum {
+	CGFS,
+	CGMANAGER,
+} cgroup_driver_t;
+
 struct cgroup_ops {
 	const char *name;
 
 	void *(*init)(const char *name);
-	void (*destroy)(void *hdata);
+	void (*destroy)(void *hdata, struct lxc_conf *conf);
 	bool (*create)(void *hdata);
 	bool (*enter)(void *hdata, pid_t pid);
 	bool (*create_legacy)(void *hdata, pid_t pid);
 	const char *(*get_cgroup)(void *hdata, const char *subsystem);
+	const char *(*canonical_path)(void *hdata);
+	bool (*escape)(void);
 	int (*set)(const char *filename, const char *value, const char *name, const char *lxcpath);
 	int (*get)(const char *filename, char *value, size_t len, const char *name, const char *lxcpath);
 	bool (*unfreeze)(void *hdata);
@@ -50,6 +57,7 @@ struct cgroup_ops {
 	bool (*mount_cgroup)(void *hdata, const char *root, int type);
 	int (*nrtasks)(void *hdata);
 	void (*disconnect)(void);
+	cgroup_driver_t driver;
 };
 
 extern bool cgroup_attach(const char *name, const char *lxcpath, pid_t pid);
@@ -64,7 +72,17 @@ extern void cgroup_cleanup(struct lxc_handler *handler);
 extern bool cgroup_create_legacy(struct lxc_handler *handler);
 extern int cgroup_nrtasks(struct lxc_handler *handler);
 extern const char *cgroup_get_cgroup(struct lxc_handler *handler, const char *subsystem);
+extern bool cgroup_escape(void);
+
+/*
+ * Currently, this call  only makes sense for privileged containers.
+ */
+extern const char *cgroup_canonical_path(struct lxc_handler *handler);
 extern bool cgroup_unfreeze(struct lxc_handler *handler);
 extern void cgroup_disconnect(void);
+extern cgroup_driver_t cgroup_driver(void);
+
+extern void prune_init_scope(char *cg);
+extern bool is_crucial_cgroup_subsystem(const char *s);
 
 #endif

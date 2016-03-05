@@ -188,21 +188,23 @@ usage() {
     cat <<EOF
 LXC container image downloader
 
+Special arguments:
+[ -h | --help ]: Print this help message and exit.
+[ -l | --list ]: List all available images and exit.
+
 Required arguments:
 [ -d | --dist <distribution> ]: The name of the distribution
 [ -r | --release <release> ]: Release name/version
 [ -a | --arch <architecture> ]: Architecture of the container
 
 Optional arguments:
-[ -h | --help ]: This help message
-[ -l | --list ]: List all available images
 [ --variant <variant> ]: Variant of the image (default: "default")
 [ --server <server> ]: Image server (default: "images.linuxcontainers.org")
 [ --keyid <keyid> ]: GPG keyid (default: 0x...)
 [ --keyserver <keyserver> ]: GPG keyserver to use
 [ --no-validate ]: Disable GPG validation (not recommended)
 [ --flush-cache ]: Flush the local copy (if present)
-[ --force-cache ]; Force the use of the local copy even if expired
+[ --force-cache ]: Force the use of the local copy even if expired
 
 LXC internal arguments (do not pass manually!):
 [ --name <name> ]: The container name
@@ -215,7 +217,7 @@ EOF
 }
 
 options=$(getopt -o d:r:a:hl -l dist:,release:,arch:,help,list,variant:,\
-server:,keyid:,no-validate,flush-cache,force-cache,name:,path:,\
+server:,keyid:,keyserver:,no-validate,flush-cache,force-cache,name:,path:,\
 rootfs:,mapped-uid:,mapped-gid: -- "$@")
 
 if [ $? -ne 0 ]; then
@@ -234,6 +236,7 @@ while :; do
         --variant)          DOWNLOAD_VARIANT=$2; shift 2;;
         --server)           DOWNLOAD_SERVER=$2; shift 2;;
         --keyid)            DOWNLOAD_KEYID=$2; shift 2;;
+        --keyserver)        DOWNLOAD_KEYSERVER=$2; shift 2;;
         --no-validate)      DOWNLOAD_VALIDATE="false"; shift 1;;
         --flush-cache)      DOWNLOAD_FLUSH_CACHE="true"; shift 1;;
         --force-cache)      DOWNLOAD_FORCE_CACHE="true"; shift 1;;
@@ -265,8 +268,10 @@ fi
 
 # Check that we have all variables we need
 if [ -z "$LXC_NAME" ] || [ -z "$LXC_PATH" ] || [ -z "$LXC_ROOTFS" ]; then
-    echo "ERROR: Not running through LXC." 1>&2
-    exit 1
+    if [ "$DOWNLOAD_LIST_IMAGES" != "true" ]; then
+        echo "ERROR: Not running through LXC." 1>&2
+        exit 1
+    fi
 fi
 
 USERNS=$(in_userns)
@@ -375,7 +380,9 @@ else
     LXC_CACHE_BASE="$HOME/.cache/lxc/"
 fi
 
-LXC_CACHE_PATH="$LXC_CACHE_BASE/download/$DOWNLOAD_DIST"
+# Allow the setting of the LXC_CACHE_PATH with the usage of environment variables.
+LXC_CACHE_PATH=${LXC_CACHE_PATH:-"$LXC_CACHE_BASE"}
+LXC_CACHE_PATH=$LXC_CACHE_PATH/download/$DOWNLOAD_DIST
 LXC_CACHE_PATH="$LXC_CACHE_PATH/$DOWNLOAD_RELEASE/$DOWNLOAD_ARCH/"
 LXC_CACHE_PATH="$LXC_CACHE_PATH/$DOWNLOAD_VARIANT"
 
@@ -569,6 +576,11 @@ for file in $TEMPLATE_FILES; do
     sed -i "s#LXC_TEMPLATE_CONFIG#$LXC_TEMPLATE_CONFIG#g" $file
     sed -i "s#LXC_HOOK_DIR#$LXC_HOOK_DIR#g" $file
 done
+
+# prevent mingetty from calling vhangup(2) since it fails with userns on Centos / Oracle
+if [ -f ${LXC_ROOTFS}/etc/init/tty.conf ]; then
+    sed -i 's|mingetty|mingetty --nohangup|' ${LXC_ROOTFS}/etc/init/tty.conf
+fi
 
 if [ -n "$LXC_MAPPED_UID" ] && [ "$LXC_MAPPED_UID" != "-1" ]; then
     chown $LXC_MAPPED_UID $LXC_PATH/config $LXC_PATH/fstab >/dev/null 2>&1 || true

@@ -38,6 +38,12 @@
 #define luaL_checkunsigned(L,n) luaL_checknumber(L,n)
 #endif
 
+#if LUA_VERSION_NUM >= 503
+#ifndef luaL_checkunsigned
+#define luaL_checkunsigned(L,n) ((lua_Unsigned)luaL_checkinteger(L,n))
+#endif
+#endif
+
 #ifdef NO_CHECK_UDATA
 #define checkudata(L,i,tname)	lua_touserdata(L, i)
 #else
@@ -51,6 +57,9 @@
     (*(void **) (checkudata(L, i, tname)))
 
 #define CONTAINER_TYPENAME	"lxc.container"
+
+/* Max Lua arguments for function */
+#define MAXVARS	200
 
 static int container_new(lua_State *L)
 {
@@ -185,6 +194,20 @@ static int container_wait(lua_State *L)
     int timeout = luaL_checkinteger(L, 3);
 
     lua_pushboolean(L, !!c->wait(c, state, timeout));
+    return 1;
+}
+
+static int container_rename(lua_State *L)
+{
+    struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+    const char *new_name;
+    int argc = lua_gettop(L);
+
+    if (argc > 1) {
+	new_name = luaL_checkstring(L, 2);
+	lua_pushboolean(L, !!c->rename(c, new_name));
+    } else
+	lua_pushnil(L);
     return 1;
 }
 
@@ -376,8 +399,101 @@ not_found:
     return 1;
 }
 
+static int container_attach(lua_State *L)
+{
+    struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+    int argc = lua_gettop(L);
+    char **argv = NULL;
+    int i;
+
+    if (argc > 1) {
+	argv = alloca((argc+1) * sizeof(char *));
+	for (i = 0; i < argc-1; i++) {
+		const char *arg = luaL_checkstring(L, i+2);
+		argv[i] = strdupa(arg);
+	}
+	argv[i] = NULL;
+    }
+    else
+    {
+    	lua_pushnil(L);
+    	return 1;
+    }
+
+    lua_pushboolean(L, !(c->attach_run_wait(c, NULL, argv[0], (const char**)argv)));
+    return 1;
+}
+
+static int container_get_interfaces(lua_State *L)
+{
+    struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+    char **ifaces;
+    int i;
+
+    ifaces = c->get_interfaces(c);
+
+    if (!ifaces){
+	lua_pushnil(L);
+	return 1;
+    }
+
+    for (i = 0; ifaces[i]; i++);
+
+    /* protect LUA stack form overflow */
+    if (i > MAXVARS || !lua_checkstack(L, i)){
+        for (i = 0; ifaces[i]; i++)
+	    free(ifaces[i]);
+	lua_pushnil(L);
+	return 1;
+    }
+    for (i = 0; ifaces[i]; i++){
+	lua_pushstring(L, ifaces[i]);
+	free(ifaces[i]);
+    }
+    return i;
+}
+
+static int container_get_ips(lua_State *L)
+{
+    struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+    int argc = lua_gettop(L);
+    char **addresses;
+    char *iface = NULL, *family = NULL;
+    int i, scope = 0;
+
+    if (argc > 1)
+	iface = (char *)luaL_checkstring(L, 2);
+    if (argc > 2)
+	family = (char *)luaL_checkstring(L, 3);
+    if (argc > 3)
+	scope = luaL_checkinteger(L, 4);
+
+    addresses = c->get_ips(c, iface, family, scope);
+
+    if (!addresses){
+	lua_pushnil(L);
+	return 1;
+    }
+
+    for (i = 0; addresses[i]; i++);
+
+    /* protect LUA stack form overflow */
+    if (i > MAXVARS || !lua_checkstack(L, i)){
+        for (i = 0; addresses[i]; i++)
+	    free(addresses[i]);
+	lua_pushnil(L);
+	return 1;
+    }
+    for (i = 0; addresses[i]; i++){
+	lua_pushstring(L, addresses[i]);
+	free(addresses[i]);
+    }
+    return i;
+}
+
 static luaL_Reg lxc_container_methods[] =
 {
+    {"attach",                  container_attach},
     {"create",			container_create},
     {"defined",			container_defined},
     {"destroy",			container_destroy},
@@ -391,6 +507,7 @@ static luaL_Reg lxc_container_methods[] =
     {"stop",			container_stop},
     {"shutdown",		container_shutdown},
     {"wait",			container_wait},
+    {"rename",			container_rename},
 
     {"config_file_name",	container_config_file_name},
     {"load_config",		container_load_config},
@@ -403,6 +520,8 @@ static luaL_Reg lxc_container_methods[] =
     {"set_config_item",		container_set_config_item},
     {"clear_config_item",	container_clear_config_item},
     {"get_keys",		container_get_keys},
+    {"get_interfaces",		container_get_interfaces},
+    {"get_ips",			container_get_ips},
     {NULL, NULL}
 };
 
