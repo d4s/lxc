@@ -40,10 +40,6 @@ done
 # Make sure the usual locations are in PATH
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
 
-# use virbr0 that is setup by default by libvirtd
-lxc_network_type=veth
-lxc_network_link=virbr0
-
 die()
 {
     echo "failed: $1"
@@ -149,29 +145,30 @@ EOF
 
     # OL7 has systemd, no rc.sysinit
     if [ $container_release_major = "7" ]; then
-        # from mhw in the fedora template: We do need to disable the
-        # "ConditionalPathExists=/dev/tty0" line or no gettys are started on
-        # the ttys in the container. Lets do it in an override copy of the
-        # service so it can still pass rpm verifies and not be automatically
-        # updated by a new systemd version.
-        sed -e 's/^ConditionPathExists=/#LXC ConditionPathExists=/' \
-            < $container_rootfs/usr/lib/systemd/system/getty\@.service \
-            > $container_rootfs/etc/systemd/system/getty\@.service
-        # Setup getty service on the 4 ttys we are going to allow in the
-        # default config.  Number should match lxc.tty
-        ( cd $container_rootfs/etc/systemd/system/getty.target.wants
-            for i in 1 2 3 4 ; do ln -sf ../getty\@.service getty@tty${i}.service; done )
-        # We only want to spawn a getty on /dev/console in lxc, libvirt-lxc
-        # symlinks /dev/console to /dev/tty1
-        sed -i '/Before=getty.target/a ConditionVirtualization=lxc' $container_rootfs/usr/lib/systemd/system/console-getty.service
+        # with newer systemd (OL7.2), getty service include container-getty.service
+        # let that be the one who manage the getty service instead
+        if [ ! -f $container_rootfs/usr/lib/systemd/system/container-getty@.service ]; then
+        	# from mhw in the fedora template: We do need to disable the
+        	# "ConditionalPathExists=/dev/tty0" line or no gettys are started on
+        	# the ttys in the container. Lets do it in an override copy of the
+        	# service so it can still pass rpm verifies and not be automatically
+        	# updated by a new systemd version.
+        	sed -e 's/^ConditionPathExists=/#LXC ConditionPathExists=/' \
+            		< $container_rootfs/usr/lib/systemd/system/getty\@.service \
+            		> $container_rootfs/etc/systemd/system/getty\@.service
+        	# Setup getty service on the 4 ttys we are going to allow in the
+        	# default config.  Number should match lxc.tty
+        	( cd $container_rootfs/etc/systemd/system/getty.target.wants
+            		for i in 1 2 3 4 ; do ln -sf ../getty\@.service getty@tty${i}.service; done )
+        	# We only want to spawn a getty on /dev/console in lxc, libvirt-lxc
+        	# symlinks /dev/console to /dev/tty1
+        	sed -i '/Before=getty.target/a ConditionVirtualization=lxc' $container_rootfs/usr/lib/systemd/system/console-getty.service
+        fi
 
         # disable some systemd services, set default boot, sigpwr target
         rm -f $container_rootfs/usr/lib/systemd/system/sysinit.target.wants/kmod-static-nodes.service
         chroot $container_rootfs systemctl -q disable graphical.target
         chroot $container_rootfs systemctl -q enable multi-user.target
-        if [ ! -e $container_rootfs/etc/systemd/system/sigpwr.target ]; then
-            chroot $container_rootfs ln -s /usr/lib/systemd/system/halt.target /etc/systemd/system/sigpwr.target
-        fi
 
         # systemd in userns won't be able to set /proc/self/oom_score_adj which
         # prevents the dbus service from starting
@@ -440,6 +437,31 @@ EOF
     # start with a clean /var/log/messages
     rm -f $container_rootfs/var/log/messages
 
+    # set initial timezone as on host
+    if [ -f /etc/sysconfig/clock ]; then
+        . /etc/sysconfig/clock
+        if [ $container_release_major = "5" -o $container_release_major = "6" ]; then
+                echo ZONE=$ZONE > $container_rootfs/etc/sysconfig/clock
+                chroot $container_rootfs tzdata-update
+        else
+                ZONE="${ZONE// /_}"
+                chroot $container_rootfs ln -sf ../usr/share/zoneinfo/$ZONE /etc/localtime
+        fi
+    else
+        ZONE=`readlink /etc/localtime | sed -s "s/\.\.\/usr\/share\/zoneinfo\///g"`
+        if [ "$ZONE" ]; then
+                if [ $container_release_major = "5" -o $container_release_major = "6" ]; then
+                        echo ZONE=$ZONE > $container_rootfs/etc/sysconfig/clock
+                        chroot $container_rootfs tzdata-update
+                else
+                        # if /etc/localtime is a symlink, this should preserve it.
+                        cp -a /etc/localtime $container_rootfs/etc/localtime
+                fi
+        else
+                echo "Timezone in container is not configured. Adjust it manually."
+        fi
+    fi
+
     # add oracle user, set root password
     chroot $container_rootfs useradd -m -s /bin/bash oracle
     echo "oracle:oracle" | chroot $container_rootfs chpasswd
@@ -459,11 +481,6 @@ container_config_create()
         echo "lxc.include = @LXCTEMPLATECONFIG@/oracle.common.conf" >> $cfg_dir/config
     fi
 
-    # generate a hwaddr for the container with a high mac address
-    # see http://sourceforge.net/tracker/?func=detail&aid=3411497&group_id=163076&atid=826303
-    local hwaddr="fe:`dd if=/dev/urandom bs=8 count=1 2>/dev/null |od -t x8 | \
-                      head -n 1 |awk '{print $2}' | cut -c1-10 |\
-                      sed 's/\(..\)/\1:/g; s/.$//'`"
     cat <<EOF >> $cfg_dir/config || die "unable to create $cfg_dir/config"
 # Container configuration for Oracle Linux $container_release_major.$container_release_minor
 lxc.arch = $arch
@@ -481,20 +498,37 @@ EOF
     fi
 
     echo "# Networking" >>$cfg_dir/config
-    # see if the network settings were already specified
+    # see if the default network settings were already specified
     lxc_network_type=`grep '^lxc.network.type' $cfg_dir/config | awk -F'[= \t]+' '{ print $2 }'`
-    if [ -z "$lxc_network_type" -a			\
-        \( $host_distribution = "OracleServer" -o	\
-           $host_distribution = "Fedora" \) ]; then
-            echo "lxc.network.type = veth" >>$cfg_dir/config
-            echo "lxc.network.flags = up" >>$cfg_dir/config
-            echo "lxc.network.link = virbr0" >>$cfg_dir/config
+    if [ -z "$lxc_network_type" ]; then
+        echo "lxc.network.type = veth" >>$cfg_dir/config
+        lxc_network_type=veth
+    fi
+
+    lxc_network_link=`grep '^lxc.network.link' $cfg_dir/config | awk -F'[= \t]+' '{ print $2 }'`
+    if [ -z "$lxc_network_link" ]; then
+        echo "lxc.network.link = lxcbr0" >>$cfg_dir/config
+        lxc_network_link=lxcbr0
+    fi
+
+    lxc_network_hwaddr=`grep '^lxc.network.hwaddr' $cfg_dir/config | awk -F'[= \t]+' '{ print $2 }'`
+    if [ -z "$lxc_network_hwaddr" ]; then
+	# generate a hwaddr for the container
+        # see http://sourceforge.net/tracker/?func=detail&aid=3411497&group_id=163076&atid=826303
+        local hwaddr="00:16:3e:`dd if=/dev/urandom bs=8 count=1 2>/dev/null |od -t x8 | \
+                        head -n1 | awk '{print $2}' | cut -c1-6 | \
+                        sed 's/\(..\)/\1:/g; s/.$//'`"
+        echo "lxc.network.hwaddr = $hwaddr" >>$cfg_dir/config
+    fi
+
+    lxc_network_flags=`grep '^lxc.network.flags' $cfg_dir/config | awk -F'[= \t]+' '{ print $2 }'`
+    if [ -z "$lxc_network_flags" ]; then
+        echo "lxc.network.flags = up" >>$cfg_dir/config
     fi
 
     cat <<EOF >> $cfg_dir/config || die "unable to create $cfg_dir/config"
 lxc.network.name = eth0
 lxc.network.mtu = 1500
-lxc.network.hwaddr = $hwaddr
 EOF
 }
 

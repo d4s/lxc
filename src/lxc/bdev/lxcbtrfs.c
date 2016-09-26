@@ -33,6 +33,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/vfs.h>
 
 #include "bdev.h"
 #include "log.h"
@@ -140,6 +141,32 @@ bool is_btrfs_fs(const char *path)
 		return false;
 
 	return true;
+}
+
+/*
+ * Taken from btrfs toolsuite. Test if path is a subvolume.
+ *	return 0;   path exists but it is not a subvolume
+ *	return 1;   path exists and it is  a subvolume
+ *	return < 0; error
+ */
+int is_btrfs_subvol(const char *path)
+{
+	struct stat st;
+	struct statfs stfs;
+	int ret;
+
+	ret = stat(path, &st);
+	if (ret < 0)
+		return -errno;
+
+	if (st.st_ino != BTRFS_FIRST_FREE_OBJECTID || !S_ISDIR(st.st_mode))
+		return 0;
+
+	ret = statfs(path, &stfs);
+	if (ret < 0)
+		return -errno;
+
+	return stfs.f_type == BTRFS_SUPER_MAGIC;
 }
 
 int btrfs_detect(const char *path)
@@ -568,7 +595,7 @@ static int btrfs_recursive_destroy(const char *path)
 	struct btrfs_ioctl_search_header sh;
 	struct btrfs_root_ref *ref;
 	struct my_btrfs_tree *tree;
-	int ret, i;
+	int ret, e, i;
 	unsigned long off = 0;
 	int name_len;
 	char *name;
@@ -582,8 +609,9 @@ static int btrfs_recursive_destroy(const char *path)
 	}
 
 	if (btrfs_list_get_path_rootid(fd, &root_id)) {
+		e = errno;
 		close(fd);
-		if (errno == EPERM || errno == EACCES) {
+		if (e == EPERM || e == EACCES) {
 			WARN("Will simply try removing");
 			goto ignore_search;
 		}
@@ -614,10 +642,16 @@ static int btrfs_recursive_destroy(const char *path)
 
 	while(1) {
 		ret = ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args);
+		e = errno;
 		if (ret < 0) {
 			close(fd);
-			ERROR("Error: can't perform the search under %s\n", path);
 			free_btrfs_tree(tree);
+			if (e == EPERM || e == EACCES) {
+				WARN("Warn: can't perform the search under %s. Will simply try removing", path);
+				goto ignore_search;
+			}
+
+			ERROR("Error: can't perform the search under %s\n", path);
 			return -1;
 		}
 		if (sk->nr_items == 0)

@@ -39,9 +39,9 @@
 #include <sys/wait.h>
 
 #include "attach.h"
-#include "bdev/bdev.h"
-#include "bdev/lxcoverlay.h"
-#include "bdev/lxcbtrfs.h"
+#include "bdev.h"
+#include "lxcoverlay.h"
+#include "lxcbtrfs.h"
 #include "cgroup.h"
 #include "conf.h"
 #include "config.h"
@@ -623,7 +623,7 @@ WRAP_API_1(bool, wait_on_daemonized_start, int)
 
 static bool am_single_threaded(void)
 {
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	DIR *dir;
 	int count=0;
 
@@ -633,7 +633,7 @@ static bool am_single_threaded(void)
 		return false;
 	}
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		if (!direntp)
 			break;
 
@@ -670,7 +670,7 @@ static char **split_init_cmd(const char *incmd)
 {
 	size_t len;
 	int nargs = 0;
-	char *copy, *p, *saveptr;
+	char *copy, *p, *saveptr = NULL;
 	char **argv;
 
 	if (!incmd)
@@ -1037,6 +1037,7 @@ static struct bdev *do_bdev_create(struct lxc_container *c, const char *type,
 	}
 
 	do_lxcapi_set_config_item(c, "lxc.rootfs", bdev->src);
+	do_lxcapi_set_config_item(c, "lxc.rootfs.backend", bdev->type);
 
 	/* if we are not root, chown the rootfs dir to root in the
 	 * target uidmap */
@@ -1076,7 +1077,7 @@ static bool create_run_template(struct lxc_container *c, char *tpath, bool need_
 	}
 
 	if (pid == 0) { // child
-		char *patharg, *namearg, *rootfsarg, *src;
+		char *patharg, *namearg, *rootfsarg;
 		struct bdev *bdev = NULL;
 		int i;
 		int ret, len, nargs = 0;
@@ -1087,18 +1088,7 @@ static bool create_run_template(struct lxc_container *c, char *tpath, bool need_
 			exit(1);
 		}
 
-		src = c->lxc_conf->rootfs.path;
-		/*
-		 * for an overlay create, what the user wants is the template to fill
-		 * in what will become the readonly lower layer.  So don't mount for
-		 * the template
-		 */
-		if (strncmp(src, "overlayfs:", 10) == 0)
-			src = ovl_getlower(src+10);
-		if (strncmp(src, "aufs:", 5) == 0)
-			src = ovl_getlower(src+5);
-
-		bdev = bdev_init(c->lxc_conf, src, c->lxc_conf->rootfs.mount, NULL);
+		bdev = bdev_init(c->lxc_conf, c->lxc_conf->rootfs.path, c->lxc_conf->rootfs.mount, NULL);
 		if (!bdev) {
 			ERROR("Error opening rootfs");
 			exit(1);
@@ -1375,6 +1365,9 @@ static bool prepend_lxc_header(char *path, const char *t, char *const argv[])
 	fprintf(f, "\n");
 #endif
 	fprintf(f, "# For additional config options, please look at lxc.container.conf(5)\n");
+	fprintf(f, "\n# Uncomment the following line to support nesting containers:\n");
+	fprintf(f, "#lxc.include = " LXCTEMPLATECONFIG "/nesting.conf\n");
+	fprintf(f, "# (Be aware this has security implications)\n\n");
 	if (fwrite(contents, 1, flen, f) != flen) {
 		SYSERROR("Writing original contents");
 		free(contents);
@@ -1611,8 +1604,16 @@ static bool do_lxcapi_shutdown(struct lxc_container *c, int timeout)
 	pid = do_lxcapi_init_pid(c);
 	if (pid <= 0)
 		return true;
+
+	/* Detect whether we should send SIGRTMIN + 3 (e.g. systemd). */
+	if (task_blocking_signal(pid, (SIGRTMIN + 3)))
+		haltsignal = (SIGRTMIN + 3);
+
 	if (c->lxc_conf && c->lxc_conf->haltsignal)
 		haltsignal = c->lxc_conf->haltsignal;
+
+	INFO("Using signal number '%d' as halt signal.", haltsignal);
+
 	kill(pid, haltsignal);
 	retv = do_lxcapi_wait(c, "STOPPED", timeout);
 	return retv;
@@ -2160,13 +2161,8 @@ static bool mod_rdep(struct lxc_container *c0, struct lxc_container *c, bool inc
 			}
 
 			if (fbuf.st_size != 0) {
-				/* write terminating \0-byte to file */
-				if (pwrite(fd, "", 1, fbuf.st_size) <= 0) {
-					close(fd);
-					goto out;
-				}
 
-				buf = mmap(NULL, fbuf.st_size + 1, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+				buf = lxc_strmmap(NULL, fbuf.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 				if (buf == MAP_FAILED) {
 					SYSERROR("Failed to create mapping %s", path);
 					close(fd);
@@ -2179,7 +2175,7 @@ static bool mod_rdep(struct lxc_container *c0, struct lxc_container *c, bool inc
 					bytes += len;
 				}
 
-				munmap(buf, fbuf.st_size + 1);
+				lxc_strmunmap(buf, fbuf.st_size);
 				if (ftruncate(fd, fbuf.st_size - bytes) < 0) {
 					SYSERROR("Failed to truncate file %s", path);
 					close(fd);
@@ -2288,7 +2284,7 @@ out:
 static bool has_snapshots(struct lxc_container *c)
 {
 	char path[MAXPATHLEN];
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	int count=0;
 	DIR *dir;
 
@@ -2297,7 +2293,7 @@ static bool has_snapshots(struct lxc_container *c)
 	dir = opendir(path);
 	if (!dir)
 		return false;
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		if (!direntp)
 			break;
 
@@ -2830,6 +2826,7 @@ bool should_default_to_snapshot(struct lxc_container *c0,
 	size_t l1 = strlen(c1->config_path) + strlen(c1->name) + 2;
 	char *p0 = alloca(l0 + 1);
 	char *p1 = alloca(l1 + 1);
+	char *rootfs = c0->lxc_conf->rootfs.path;
 
 	snprintf(p0, l0, "%s/%s", c0->config_path, c0->name);
 	snprintf(p1, l1, "%s/%s", c1->config_path, c1->name);
@@ -2837,11 +2834,15 @@ bool should_default_to_snapshot(struct lxc_container *c0,
 	if (!is_btrfs_fs(p0) || !is_btrfs_fs(p1))
 		return false;
 
+	if (is_btrfs_subvol(rootfs) <= 0)
+		return false;
+
 	return btrfs_same_fs(p0, p1) == 0;
 }
 
 static int copy_storage(struct lxc_container *c0, struct lxc_container *c,
-		const char *newtype, int flags, const char *bdevdata, uint64_t newsize)
+			const char *newtype, int flags, const char *bdevdata,
+			uint64_t newsize)
 {
 	struct bdev *bdev;
 	int need_rdep;
@@ -2849,31 +2850,53 @@ static int copy_storage(struct lxc_container *c0, struct lxc_container *c,
 	if (should_default_to_snapshot(c0, c))
 		flags |= LXC_CLONE_SNAPSHOT;
 
-	bdev = bdev_copy(c0, c->name, c->config_path, newtype, flags,
-			bdevdata, newsize, &need_rdep);
+	bdev = bdev_copy(c0, c->name, c->config_path, newtype, flags, bdevdata,
+			 newsize, &need_rdep);
 	if (!bdev) {
-		ERROR("Error copying storage");
+		ERROR("Error copying storage.");
 		return -1;
 	}
+
+	/* Set new rootfs. */
 	free(c->lxc_conf->rootfs.path);
 	c->lxc_conf->rootfs.path = strdup(bdev->src);
+
+	/* Set new bdev type. */
+	free(c->lxc_conf->rootfs.bdev_type);
+	c->lxc_conf->rootfs.bdev_type = strdup(bdev->type);
 	bdev_put(bdev);
+
 	if (!c->lxc_conf->rootfs.path) {
-		ERROR("Out of memory while setting storage path");
+		ERROR("Out of memory while setting storage path.");
 		return -1;
 	}
-	// We will simply append a new lxc.rootfs entry to the unexpanded config
+	if (!c->lxc_conf->rootfs.bdev_type) {
+		ERROR("Out of memory while setting rootfs backend.");
+		return -1;
+	}
+
+	/* Append a new lxc.rootfs entry to the unexpanded config. */
 	clear_unexp_config_line(c->lxc_conf, "lxc.rootfs", false);
-	if (!do_append_unexp_config_line(c->lxc_conf, "lxc.rootfs", c->lxc_conf->rootfs.path)) {
-		ERROR("Error saving new rootfs to cloned config");
+	if (!do_append_unexp_config_line(c->lxc_conf, "lxc.rootfs",
+					 c->lxc_conf->rootfs.path)) {
+		ERROR("Error saving new rootfs to cloned config.");
 		return -1;
 	}
+
+	/* Append a new lxc.rootfs.backend entry to the unexpanded config. */
+	clear_unexp_config_line(c->lxc_conf, "lxc.rootfs.backend", false);
+	if (!do_append_unexp_config_line(c->lxc_conf, "lxc.rootfs.backend",
+					 c->lxc_conf->rootfs.bdev_type)) {
+		ERROR("Error saving new rootfs backend to cloned config.");
+		return -1;
+	}
+
 	if (flags & LXC_CLONE_SNAPSHOT)
 		copy_rdepends(c, c0);
 	if (need_rdep) {
 		if (!add_rdepends(c, c0))
 			WARN("Error adding reverse dependency from %s to %s",
-				c->name, c0->name);
+			     c->name, c0->name);
 	}
 
 	mod_all_rdeps(c, true);
@@ -3484,7 +3507,7 @@ static int do_lxcapi_snapshot_list(struct lxc_container *c, struct lxc_snapshot 
 {
 	char snappath[MAXPATHLEN], path2[MAXPATHLEN];
 	int count = 0, ret;
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	struct lxc_snapshot *snaps =NULL, *nsnaps;
 	DIR *dir;
 
@@ -3501,7 +3524,7 @@ static int do_lxcapi_snapshot_list(struct lxc_container *c, struct lxc_snapshot 
 		return 0;
 	}
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		if (!direntp)
 			break;
 
@@ -3647,7 +3670,7 @@ err:
 static bool remove_all_snapshots(const char *path)
 {
 	DIR *dir;
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	bool bret = true;
 
 	dir = opendir(path);
@@ -3655,7 +3678,7 @@ static bool remove_all_snapshots(const char *path)
 		SYSERROR("opendir on snapshot path %s", path);
 		return false;
 	}
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		if (!direntp)
 			break;
 		if (!strcmp(direntp->d_name, "."))
@@ -3937,6 +3960,7 @@ static int do_lxcapi_migrate(struct lxc_container *c, unsigned int cmd,
 			     struct migrate_opts *opts, unsigned int size)
 {
 	int ret;
+	struct migrate_opts *valid_opts = opts;
 
 	/* If the caller has a bigger (newer) struct migrate_opts, let's make
 	 * sure that the stuff on the end is zero, i.e. that they didn't ask us
@@ -3955,20 +3979,36 @@ static int do_lxcapi_migrate(struct lxc_container *c, unsigned int cmd,
 		}
 	}
 
+	/* If the caller has a smaller struct, let's zero out the end for them
+	 * so we don't accidentally use bits of it that they didn't know about
+	 * to initialize.
+	 */
+	if (size < sizeof(*opts)) {
+		valid_opts = malloc(sizeof(*opts));
+		if (!valid_opts)
+			return -ENOMEM;
+
+		memset(valid_opts, 0, sizeof(*opts));
+		memcpy(valid_opts, opts, size);
+	}
+
 	switch (cmd) {
 	case MIGRATE_PRE_DUMP:
-		ret = !pre_dump(c, opts->directory, opts->verbose, opts->predump_dir);
+		ret = !__criu_pre_dump(c, valid_opts);
 		break;
 	case MIGRATE_DUMP:
-		ret = !dump(c, opts->directory, opts->stop, opts->verbose, opts->predump_dir);
+		ret = !__criu_dump(c, valid_opts);
 		break;
 	case MIGRATE_RESTORE:
-		ret = !restore(c, opts->directory, opts->verbose);
+		ret = !__criu_restore(c, valid_opts);
 		break;
 	default:
 		ERROR("invalid migrate command %u", cmd);
 		ret = -EINVAL;
 	}
+
+	if (size < sizeof(*opts))
+		free(valid_opts);
 
 	return ret;
 }
@@ -3977,11 +4017,13 @@ WRAP_API_3(int, lxcapi_migrate, unsigned int, struct migrate_opts *, unsigned in
 
 static bool do_lxcapi_checkpoint(struct lxc_container *c, char *directory, bool stop, bool verbose)
 {
-	struct migrate_opts opts = {
-		.directory = directory,
-		.stop = stop,
-		.verbose = verbose,
-	};
+	struct migrate_opts opts;
+
+	memset(&opts, 0, sizeof(opts));
+
+	opts.directory = directory;
+	opts.stop = stop;
+	opts.verbose = verbose;
 
 	return !do_lxcapi_migrate(c, MIGRATE_DUMP, &opts, sizeof(opts));
 }
@@ -3990,10 +4032,12 @@ WRAP_API_3(bool, lxcapi_checkpoint, char *, bool, bool)
 
 static bool do_lxcapi_restore(struct lxc_container *c, char *directory, bool verbose)
 {
-	struct migrate_opts opts = {
-		.directory = directory,
-		.verbose = verbose,
-	};
+	struct migrate_opts opts;
+
+	memset(&opts, 0, sizeof(opts));
+
+	opts.directory = directory;
+	opts.verbose = verbose;
 
 	return !do_lxcapi_migrate(c, MIGRATE_RESTORE, &opts, sizeof(opts));
 }
@@ -4168,7 +4212,7 @@ int list_defined_containers(const char *lxcpath, char ***names, struct lxc_conta
 {
 	DIR *dir;
 	int i, cfound = 0, nfound = 0;
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	struct lxc_container *c;
 
 	if (!lxcpath)
@@ -4185,7 +4229,7 @@ int list_defined_containers(const char *lxcpath, char ***names, struct lxc_conta
 	if (names)
 		*names = NULL;
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		if (!direntp)
 			break;
 

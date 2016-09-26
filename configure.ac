@@ -4,7 +4,7 @@
 m4_define([lxc_version_major], 2)
 m4_define([lxc_version_minor], 0)
 m4_define([lxc_version_micro], 0)
-m4_define([lxc_version_beta], rc5)
+m4_define([lxc_version_beta], [])
 m4_define([lxc_version_abi], 1.2.0)
 
 m4_define([lxc_version_base], [lxc_version_major.lxc_version_minor.lxc_version_micro])
@@ -57,6 +57,7 @@ if test "z$with_distro" = "z"; then
 	AC_CHECK_FILE(/etc/mandriva-release,with_distro="openmandriva")
 	AC_CHECK_FILE(/etc/pardus-release,with_distro="pardus")
 	AC_CHECK_FILE(/etc/altlinux-release,with_distro="altlinux")
+	AC_CHECK_FILE(/etc/pld-release,with_distro="pld")
 fi
 with_distro=`echo ${with_distro} | tr '[[:upper:]]' '[[:lower:]]'`
 
@@ -72,7 +73,7 @@ case $with_distro in
 		distroconf=default.conf.lxcbr
 		distrosysconf="$sysconfdir/default"
 		;;
-	redhat|centos|fedora|oracle|oracleserver|sparclinux|altlinux|suse|opensuse*|plamo)
+	redhat|centos|fedora|oracle|oracleserver|sparclinux|altlinux|suse|opensuse*|plamo|pld)
 		distroconf=default.conf.lxcbr
 		distrosysconf="$sysconfdir/sysconfig"
 		;;
@@ -107,6 +108,9 @@ case "$with_init_script" in
 				;;
 			ubuntu)
 				init_script=upstart,systemd
+				;;
+			pld)
+				init_script=sysvinit,upstart,systemd
 				;;
 			*)
 				echo -n "Linux distribution init system unknown."
@@ -148,6 +152,11 @@ if test "x$with_systemdsystemunitdir" != "xno"; then
   AC_SUBST([SYSTEMD_UNIT_DIR], [$with_systemdsystemunitdir])
 fi
 
+AC_ARG_ENABLE([werror],
+	[AC_HELP_STRING([--disable-werror],
+	[do not treat warnings as errors])],
+	[], [enable_werror=yes])
+
 # Allow enabling deprecated executables
 AC_ARG_ENABLE([deprecated],
 	[AC_HELP_STRING([--enable-deprecated],
@@ -168,7 +177,7 @@ AC_ARG_ENABLE([doc],
 
 if test "x$enable_doc" = "xyes" -o "x$enable_doc" = "xauto"; then
 	db2xman=""
-	dbparsers="docbook2x-man db2x_docbook2man docbook2man docbook-to-man"
+	dbparsers="docbook2X2man docbook2x-man db2x_docbook2man docbook2man docbook-to-man"
 
 	AC_MSG_CHECKING(for docbook2x-man)
 	for name in ${dbparsers}; do
@@ -545,7 +554,7 @@ AS_AC_EXPAND(LXC_DEFAULT_CONFIG, "$sysconfdir/lxc/default.conf")
 AS_AC_EXPAND(DATADIR, "$datadir")
 AS_AC_EXPAND(LOCALSTATEDIR, "$localstatedir")
 AS_AC_EXPAND(DOCDIR, "$docdir")
-AS_AC_EXPAND(LXC_GENERATE_DATE, "$(date)")
+AS_AC_EXPAND(LXC_GENERATE_DATE, "$(date --utc --date=@${SOURCE_DATE_EPOCH:-$(date +%s)} '+%Y-%m-%d')")
 AS_AC_EXPAND(LXCPATH, "$with_config_path")
 AS_AC_EXPAND(LXC_GLOBAL_CONF, "$with_global_conf")
 AS_AC_EXPAND(LXC_USERNIC_CONF, "$with_usernic_conf")
@@ -589,6 +598,10 @@ AM_CONDITIONAL([IS_BIONIC], [test "x$is_bionic" = "xyes"])
 # Some systems lack PR_CAPBSET_DROP definition => HAVE_DECL_PR_CAPBSET_DROP
 AC_CHECK_DECLS([PR_CAPBSET_DROP], [], [], [#include <sys/prctl.h>])
 
+# Some systems lack PR_{G,S}ET_NO_NEW_PRIVS definition => HAVE_DECL_PR_{G,S}ET_NO_NEW_PRIVS
+AC_CHECK_DECLS([PR_SET_NO_NEW_PRIVS], [], [], [#include <sys/prctl.h>])
+AC_CHECK_DECLS([PR_GET_NO_NEW_PRIVS], [], [], [#include <sys/prctl.h>])
+
 # Check for some headers
 AC_CHECK_HEADERS([sys/signalfd.h pty.h ifaddrs.h sys/capability.h sys/personality.h utmpx.h sys/timerfd.h])
 
@@ -626,7 +639,10 @@ AC_PROG_SED
 LXC_CHECK_TLS
 
 if test "x$GCC" = "xyes"; then
-	CFLAGS="$CFLAGS -Wall -Werror"
+	CFLAGS="$CFLAGS -Wall"
+	if test "x$enable_werror" = "xyes"; then
+		CFLAGS="$CFLAGS -Werror"
+	fi
 fi
 
 # Files requiring some variable expansion
@@ -651,6 +667,7 @@ AC_CONFIG_FILES([
 	config/init/sysvinit/Makefile
 	config/init/sysvinit/lxc-containers
 	config/init/sysvinit/lxc-net
+	config/init/upstart/lxc.conf
 	config/init/upstart/lxc-net.conf
 	config/init/upstart/Makefile
 	config/etc/Makefile
@@ -833,6 +850,7 @@ AC_CONFIG_FILES([
 	templates/lxc-opensuse
 	templates/lxc-oracle
 	templates/lxc-plamo
+	templates/lxc-pld
 	templates/lxc-slackware
 	templates/lxc-sshd
 	templates/lxc-ubuntu
@@ -841,12 +859,11 @@ AC_CONFIG_FILES([
 
 	src/Makefile
 	src/lxc/Makefile
-	src/lxc/lxc-checkconfig
-	src/lxc/lxc-start-ephemeral
 	src/lxc/lxc.functions
+	src/lxc/tools/lxc-checkconfig
+	src/lxc/tools/lxc-start-ephemeral
 	src/lxc/version.h
 	src/python-lxc/Makefile
-	src/python-lxc/setup.py
 
 	src/lua-lxc/Makefile
 

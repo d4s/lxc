@@ -3,6 +3,7 @@
 *.lo
 *.la
 *.so
+*.so.*
 *.sgml
 *.conf
 *~
@@ -35,7 +36,7 @@ src/lxc/init.lxc.static
 src/lxc/lxc-attach
 src/lxc/lxc-autostart
 src/lxc/lxc-cgroup
-src/lxc/lxc-checkconfig
+src/lxc/tools/lxc-checkconfig
 src/lxc/lxc-checkpoint
 src/lxc/lxc-clone
 src/lxc/lxc-console
@@ -55,7 +56,7 @@ src/lxc/lxc-monitord
 src/lxc/lxc-shutdown
 src/lxc/lxc-snapshot
 src/lxc/lxc-start
-src/lxc/lxc-start-ephemeral
+src/lxc/tools/lxc-start-ephemeral
 src/lxc/lxc-stop
 src/lxc/lxc-top
 src/lxc/lxc-unfreeze
@@ -65,7 +66,6 @@ src/lxc/lxc-wait
 src/lxc/lxc-user-nic
 src/lxc/version.h
 
-src/python-lxc/setup.py
 src/python-lxc/build/
 src/python-lxc/lxc/__pycache__/
 
@@ -91,6 +91,7 @@ src/tests/lxc-test-shutdowntest
 src/tests/lxc-test-snapshot
 src/tests/lxc-test-startone
 src/tests/lxc-test-usernic
+src/tests/lxc-test-utils
 src/tests/lxc-usernic-test
 
 config/compile
@@ -143,3 +144,4 @@ tags
 TAGS
 
 doc/api/doxygen_sqlite3.db
+doc/api/*.tmp

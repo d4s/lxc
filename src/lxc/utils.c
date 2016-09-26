@@ -23,29 +23,29 @@
 
 #include "config.h"
 
-#include <errno.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stddef.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/vfs.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <sys/param.h>
-#include <sys/mount.h>
+#include <assert.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <libgen.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <assert.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/mount.h>
+#include <sys/param.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/vfs.h>
+#include <sys/wait.h>
 
-#include "utils.h"
 #include "log.h"
 #include "lxclock.h"
 #include "namespace.h"
+#include "utils.h"
 
 #ifndef PR_SET_MM
 #define PR_SET_MM 35
@@ -69,7 +69,7 @@ struct prctl_mm_map {
         uint64_t   *auxv;
         uint32_t   auxv_size;
         uint32_t   exe_fd;
-};              
+};
 #endif
 
 #ifndef O_PATH
@@ -90,7 +90,7 @@ extern bool btrfs_try_remove_subvol(const char *path);
 static int _recursive_rmdir(char *dirname, dev_t pdev,
 			    const char *exclude, int level, bool onedev)
 {
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	DIR *dir;
 	int ret, failed=0;
 	char pathname[MAXPATHLEN];
@@ -102,7 +102,7 @@ static int _recursive_rmdir(char *dirname, dev_t pdev,
 		return -1;
 	}
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		struct stat mystat;
 		int rc;
 
@@ -716,6 +716,24 @@ char **lxc_normalize_path(const char *path)
 	return components;
 }
 
+bool lxc_deslashify(char *path)
+{
+	char **parts = NULL, *path2;
+
+	parts = lxc_normalize_path(path);
+	if (!parts)
+		return false;
+
+	path2 = lxc_string_join("/", (const char **) parts, *path == '/');
+	lxc_free_array((void **) parts, free);
+	if (!path2)
+		return false;
+
+	strncpy(path, path2, strlen(path));
+	free(path2);
+	return true;
+}
+
 char *lxc_append_paths(const char *first, const char *second)
 {
 	size_t len = strlen(first) + strlen(second) + 1;
@@ -756,8 +774,8 @@ bool lxc_string_in_list(const char *needle, const char *haystack, char _sep)
 char **lxc_string_split(const char *string, char _sep)
 {
 	char *token, *str, *saveptr = NULL;
-	char sep[2] = { _sep, '\0' };
-	char **result = NULL;
+	char sep[2] = {_sep, '\0'};
+	char **tmp = NULL, **result = NULL;
 	size_t result_capacity = 0;
 	size_t result_count = 0;
 	int r, saved_errno;
@@ -765,7 +783,7 @@ char **lxc_string_split(const char *string, char _sep)
 	if (!string)
 		return calloc(1, sizeof(char *));
 
-	str = alloca(strlen(string)+1);
+	str = alloca(strlen(string) + 1);
 	strcpy(str, string);
 	for (; (token = strtok_r(str, sep, &saveptr)); str = NULL) {
 		r = lxc_grow_array((void ***)&result, &result_capacity, result_count + 1, 16);
@@ -778,7 +796,14 @@ char **lxc_string_split(const char *string, char _sep)
 	}
 
 	/* if we allocated too much, reduce it */
-	return realloc(result, (result_count + 1) * sizeof(char *));
+	tmp = realloc(result, (result_count + 1) * sizeof(char *));
+	if (!tmp)
+		goto error_out;
+	result = tmp;
+	/* Make sure we don't return uninitialized memory. */
+	if (result_count == 0)
+		*result = NULL;
+	return result;
 error_out:
 	saved_errno = errno;
 	lxc_free_array((void **)result, free);
@@ -941,7 +966,7 @@ void **lxc_append_null_to_array(void **array, size_t count)
 	if (count) {
 		temp = realloc(array, (count + 1) * sizeof(*array));
 		if (!temp) {
-			int i;
+			size_t i;
 			for (i = 0; i < count; i++)
 				free(array[i]);
 			free(array);
@@ -1621,8 +1646,6 @@ static int open_without_symlink(const char *target, const char *prefix_skip)
 			errno = saved_errno;
 			if (errno == ELOOP)
 				SYSERROR("%s in %s was a symbolic link!", nextpath, target);
-			else
-				SYSERROR("Error examining %s in %s", nextpath, target);
 			goto out;
 		}
 	}
@@ -1667,8 +1690,11 @@ int safe_mount(const char *src, const char *dest, const char *fstype,
 
 	destfd = open_without_symlink(dest, rootfs);
 	if (destfd < 0) {
-		if (srcfd != -1)
+		if (srcfd != -1) {
+			saved_errno = errno;
 			close(srcfd);
+			errno = saved_errno;
+		}
 		return destfd;
 	}
 
@@ -1751,23 +1777,127 @@ domount:
 	return 1;
 }
 
-int null_stdfds(void)
+int open_devnull(void)
 {
-	int fd, ret = -1;
+	int fd = open("/dev/null", O_RDWR);
 
-	fd = open("/dev/null", O_RDWR);
+	if (fd < 0)
+		SYSERROR("Can't open /dev/null");
+
+	return fd;
+}
+
+int set_stdfds(int fd)
+{
 	if (fd < 0)
 		return -1;
 
 	if (dup2(fd, 0) < 0)
-		goto err;
+		return -1;
 	if (dup2(fd, 1) < 0)
-		goto err;
+		return -1;
 	if (dup2(fd, 2) < 0)
-		goto err;
+		return -1;
 
-	ret = 0;
-err:
-	close(fd);
+	return 0;
+}
+
+int null_stdfds(void)
+{
+	int ret = -1;
+	int fd = open_devnull();
+
+	if (fd >= 0) {
+		ret = set_stdfds(fd);
+		close(fd);
+	}
+
 	return ret;
+}
+
+/*
+ * Return the number of lines in file @fn, or -1 on error
+ */
+int lxc_count_file_lines(const char *fn)
+{
+	FILE *f;
+	char *line = NULL;
+	size_t sz = 0;
+	int n = 0;
+
+	f = fopen_cloexec(fn, "r");
+	if (!f)
+		return -1;
+
+	while (getline(&line, &sz, f) != -1) {
+		n++;
+	}
+	free(line);
+	fclose(f);
+	return n;
+}
+
+void *lxc_strmmap(void *addr, size_t length, int prot, int flags, int fd,
+		  off_t offset)
+{
+	void *tmp = NULL, *overlap = NULL;
+
+	/* We establish an anonymous mapping that is one byte larger than the
+	 * underlying file. The pages handed to us are zero filled. */
+	tmp = mmap(addr, length + 1, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (tmp == MAP_FAILED)
+		return tmp;
+
+	/* Now we establish a fixed-address mapping starting at the address we
+	 * received from our anonymous mapping and replace all bytes excluding
+	 * the additional \0-byte with the file. This allows us to use normal
+	 * string-handling functions. */
+	overlap = mmap(tmp, length, prot, MAP_FIXED | flags, fd, offset);
+	if (overlap == MAP_FAILED)
+		munmap(tmp, length + 1);
+
+	return overlap;
+}
+
+int lxc_strmunmap(void *addr, size_t length)
+{
+	return munmap(addr, length + 1);
+}
+
+/* Check whether a signal is blocked by a process. */
+bool task_blocking_signal(pid_t pid, int signal)
+{
+	bool bret = false;
+	char *line = NULL;
+	long unsigned int sigblk = 0;
+	size_t n = 0;
+	int ret;
+	FILE *f;
+
+	/* The largest integer that can fit into long int is 2^64. This is a
+	 * 20-digit number. */
+	size_t len = /* /proc */ 5 + /* /pid-to-str */ 21 + /* /status */ 7 + /* \0 */ 1;
+	char status[len];
+
+	ret = snprintf(status, len, "/proc/%d/status", pid);
+	if (ret < 0 || ret >= len)
+		return bret;
+
+	f = fopen(status, "r");
+	if (!f)
+		return bret;
+
+	while (getline(&line, &n, f) != -1) {
+		if (!strncmp(line, "SigBlk:\t", 8))
+			if (sscanf(line + 8, "%lx", &sigblk) != 1)
+				goto out;
+	}
+
+	if (sigblk & signal)
+		bret = true;
+
+out:
+	free(line);
+	fclose(f);
+	return bret;
 }

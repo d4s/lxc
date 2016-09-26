@@ -50,11 +50,20 @@
 #include <sys/capability.h>
 #endif
 
-#if !HAVE_DECL_PR_CAPBSET_DROP
+#ifndef HAVE_DECL_PR_CAPBSET_DROP
 #define PR_CAPBSET_DROP 24
 #endif
 
+#ifndef HAVE_DECL_PR_SET_NO_NEW_PRIVS
+#define PR_SET_NO_NEW_PRIVS 38
+#endif
+
+#ifndef HAVE_DECL_PR_GET_NO_NEW_PRIVS
+#define PR_GET_NO_NEW_PRIVS 39
+#endif
+
 #include "af_unix.h"
+#include "bdev.h"
 #include "caps.h"
 #include "cgroup.h"
 #include "commands.h"
@@ -71,7 +80,6 @@
 #include "start.h"
 #include "sync.h"
 #include "utils.h"
-#include "bdev/bdev.h"
 #include "lsm/lsm.h"
 
 lxc_log_define(lxc_start, lxc);
@@ -82,7 +90,8 @@ const struct ns_info ns_info[LXC_NS_MAX] = {
 	[LXC_NS_UTS] = {"uts", CLONE_NEWUTS},
 	[LXC_NS_IPC] = {"ipc", CLONE_NEWIPC},
 	[LXC_NS_USER] = {"user", CLONE_NEWUSER},
-	[LXC_NS_NET] = {"net", CLONE_NEWNET}
+	[LXC_NS_NET] = {"net", CLONE_NEWNET},
+	[LXC_NS_CGROUP] = {"cgroup", CLONE_NEWCGROUP}
 };
 
 extern void mod_all_rdeps(struct lxc_container *c, bool inc);
@@ -208,7 +217,7 @@ static int match_fd(int fd)
  */
 int lxc_check_inherited(struct lxc_conf *conf, bool closeall, int fd_to_ignore)
 {
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	int fd, fddir;
 	DIR *dir;
 
@@ -224,7 +233,7 @@ restart:
 
 	fddir = dirfd(dir);
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		if (!direntp)
 			break;
 
@@ -253,6 +262,13 @@ restart:
 		}
 		WARN("inherited fd %d", fd);
 	}
+
+	/*
+	 * only enable syslog at this point to avoid the above logging function
+	 * to open a new fd and make the check_inherited function enter an
+	 * infinite loop.
+	 */
+	lxc_log_enable_syslog();
 
 	closedir(dir); /* cannot fail */
 	return 0;
@@ -365,7 +381,7 @@ int lxc_poll(const char *name, struct lxc_handler *handler)
 		goto out_mainloop_open;
 	}
 
-	if (lxc_console_mainloop_add(&descr, handler)) {
+	if (lxc_console_mainloop_add(&descr, handler->conf)) {
 		ERROR("failed to add console handler to mainloop");
 		goto out_mainloop_open;
 	}
@@ -710,6 +726,8 @@ static int do_start(void *data)
 {
 	struct lxc_list *iterator;
 	struct lxc_handler *handler = data;
+	int devnull_fd = -1, ret;
+	char path[PATH_MAX];
 
 	if (sigprocmask(SIG_SETMASK, &handler->oldmask, NULL)) {
 		SYSERROR("failed to set sigprocmask");
@@ -732,6 +750,20 @@ static int do_start(void *data)
 	/* don't leak the pinfd to the container */
 	if (handler->pinfd >= 0) {
 		close(handler->pinfd);
+	}
+
+	if (lxc_sync_wait_parent(handler, LXC_SYNC_STARTUP))
+		return -1;
+
+	/* Unshare CLONE_NEWNET after CLONE_NEWUSER  - see
+	  https://github.com/lxc/lxd/issues/1978 */
+	if ((handler->clone_flags & (CLONE_NEWNET | CLONE_NEWUSER)) ==
+			(CLONE_NEWNET | CLONE_NEWUSER)) {
+		ret = unshare(CLONE_NEWNET);
+		if (ret < 0) {
+			SYSERROR("Error unsharing network namespace");
+			goto out_warn_father;
+		}
 	}
 
 	/* Tell the parent task it can begin to configure the
@@ -788,6 +820,30 @@ static int do_start(void *data)
 	}
 	#endif
 
+	ret = snprintf(path, sizeof(path), "%s/dev/null", handler->conf->rootfs.mount);
+	if (ret < 0 || ret >= sizeof(path)) {
+		SYSERROR("sprintf'd too many chars");
+		goto out_warn_father;
+	}
+
+	/* In order to checkpoint restore, we need to have everything in the
+	 * same mount namespace. However, some containers may not have a
+	 * reasonable /dev (in particular, they may not have /dev/null), so we
+	 * can't set init's std fds to /dev/null by opening it from inside the
+	 * container.
+	 *
+	 * If that's the case, fall back to using the host's /dev/null. This
+	 * means that migration won't work, but at least we won't spew output
+	 * where it isn't wanted.
+	 */
+	if (handler->backgrounded && !handler->conf->autodev && access(path, F_OK) < 0) {
+		devnull_fd = open_devnull();
+
+		if (devnull_fd < 0)
+			goto out_warn_father;
+		WARN("using host's /dev/null for container init's std fds, migraiton won't work");
+	}
+
 	/* Setup the container, ip, names, utsname, ... */
 	if (lxc_setup(handler)) {
 		ERROR("failed to setup the container");
@@ -796,11 +852,21 @@ static int do_start(void *data)
 
 	/* ask father to setup cgroups and wait for him to finish */
 	if (lxc_sync_barrier_parent(handler, LXC_SYNC_CGROUP))
-		return -1;
+		goto out_error;
 
 	/* Set the label to change to when we exec(2) the container's init */
 	if (lsm_process_label_set(NULL, handler->conf, 1, 1) < 0)
 		goto out_warn_father;
+
+	/* Set PR_SET_NO_NEW_PRIVS after we changed the lsm label. If we do it
+	 * before we aren't allowed anymore. */
+	if (handler->conf->no_new_privs) {
+		if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+			SYSERROR("Could not set PR_SET_NO_NEW_PRIVS to block execve() gainable privileges.");
+			goto out_warn_father;
+		}
+		DEBUG("Set PR_SET_NO_NEW_PRIVS to block execve() gainable privileges.");
+	}
 
 	/* Some init's such as busybox will set sane tty settings on stdin,
 	 * stdout, stderr which it thinks is the console. We already set them
@@ -853,8 +919,20 @@ static int do_start(void *data)
 
 	close(handler->sigfd);
 
-	if (handler->backgrounded && null_stdfds() < 0)
+	if (devnull_fd < 0) {
+		devnull_fd = open_devnull();
+
+		if (devnull_fd < 0)
+			goto out_warn_father;
+	}
+
+	if (handler->backgrounded && set_stdfds(devnull_fd))
 		goto out_warn_father;
+
+	if (devnull_fd >= 0) {
+		close(devnull_fd);
+		devnull_fd = -1;
+	}
 
 	if (cgns_supported() && unshare(CLONE_NEWCGROUP) != 0) {
 		SYSERROR("Failed to unshare cgroup namespace");
@@ -868,9 +946,14 @@ static int do_start(void *data)
 	handler->ops->start(handler, handler->data);
 
 out_warn_father:
-	/* we want the parent to know something went wrong, so any
-	 * value other than what it expects is ok. */
-	lxc_sync_wake_parent(handler, LXC_SYNC_POST_CONFIGURE);
+	/* we want the parent to know something went wrong, so we return a special
+	 * error code. */
+	lxc_sync_wake_parent(handler, LXC_SYNC_ERROR);
+
+out_error:
+	if (devnull_fd >= 0)
+		close(devnull_fd);
+
 	return -1;
 }
 
@@ -984,7 +1067,7 @@ static int lxc_spawn(struct lxc_handler *handler)
 	char *errmsg = NULL;
 	bool cgroups_connected = false;
 	int saved_ns_fd[LXC_NS_MAX];
-	int preserve_mask = 0, i;
+	int preserve_mask = 0, i, flags;
 	int netpipepair[2], nveths;
 
 	netpipe = -1;
@@ -1075,6 +1158,9 @@ static int lxc_spawn(struct lxc_handler *handler)
 	}
 
 	/* Create a process in a new set of namespaces */
+	flags = handler->clone_flags;
+	if (handler->clone_flags & CLONE_NEWUSER)
+		flags &= ~CLONE_NEWNET;
 	handler->pid = lxc_clone(do_start, handler, handler->clone_flags);
 	if (handler->pid < 0) {
 		SYSERROR("failed to fork into a new namespace");
@@ -1092,8 +1178,25 @@ static int lxc_spawn(struct lxc_handler *handler)
 
 	lxc_sync_fini_child(handler);
 
-	if (lxc_sync_wait_child(handler, LXC_SYNC_CONFIGURE))
+	/* map the container uids - the container became an invalid
+	 * userid the moment it was cloned with CLONE_NEWUSER - this
+	 * call doesn't change anything immediately, but allows the
+	 * container to setuid(0) (0 being mapped to something else on
+	 * the host) later to become a valid uid again */
+	if (lxc_map_ids(&handler->conf->id_map, handler->pid)) {
+		ERROR("failed to set up id mapping");
+		goto out_delete_net;
+	}
+
+	if (lxc_sync_wake_child(handler, LXC_SYNC_STARTUP)) {
 		failed_before_rename = 1;
+		goto out_delete_net;
+	}
+
+	if (lxc_sync_wait_child(handler, LXC_SYNC_CONFIGURE)) {
+		failed_before_rename = 1;
+		goto out_delete_net;
+	}
 
 	if (!cgroup_create_legacy(handler)) {
 		ERROR("failed to setup the legacy cgroups for %s", name);
@@ -1137,16 +1240,6 @@ static int lxc_spawn(struct lxc_handler *handler)
 			}
 		}
 		close(netpipepair[1]);
-	}
-
-	/* map the container uids - the container became an invalid
-	 * userid the moment it was cloned with CLONE_NEWUSER - this
-	 * call doesn't change anything immediately, but allows the
-	 * container to setuid(0) (0 being mapped to something else on
-	 * the host) later to become a valid uid again */
-	if (lxc_map_ids(&handler->conf->id_map, handler->pid)) {
-		ERROR("failed to set up id mapping");
-		goto out_delete_net;
 	}
 
 	/* Tell the child to continue its initialization.  we'll get

@@ -97,6 +97,7 @@ BuildRequires:  libseccomp-devel
 %if %{with_python}
 Requires: python3
 BuildRequires: python3-devel
+BuildRequires: python3-setuptools
 %endif
 
 %description
@@ -169,7 +170,7 @@ fi
 
 %post
 # This test should trigger a network configure on a new install.
-if [ ! -f %{_sysconfdir}/sysconfig/lxc-net ] || ! grep -q 'USE_LXC_BRIDGE=' %{_sysconfdir}/sysconfig/lxc-net
+if [ ! -f @LXC_DISTRO_SYSCONF@/lxc-net ] || ! grep -q 'USE_LXC_BRIDGE=' @LXC_DISTRO_SYSCONF@/lxc-net
 then
 	# Grab a random 10net subnet.  Need to add test logic...
 	while [ true ]
@@ -181,7 +182,7 @@ then
 		fi
 	done
 
-	cat >  %{_sysconfdir}/sysconfig/lxc-net <<EOF
+	cat >  @LXC_DISTRO_SYSCONF@/lxc-net <<EOF
 # Leave USE_LXC_BRIDGE as "true" if you want to use lxcbr0 for your
 # containers.  Set to "false" if you'll use virbr0 or another existing
 # bridge, or mavlan to your host's NIC.
@@ -275,7 +276,6 @@ fi
 %{_libexecdir}/%{name}
 %attr(4111,root,root) %{_libexecdir}/%{name}/lxc-user-nic
 %if %{with_systemd}
-%attr(555,root,root) %{_libexecdir}/%{name}/lxc-devsetup
 %attr(555,root,root) %{_libexecdir}/%{name}/lxc-net
 %attr(555,root,root) %{_libexecdir}/%{name}/lxc-containers
 %endif

@@ -1548,6 +1548,24 @@ proc proc proc nodev,noexec,nosuid 0 0
 	  </listitem>
 	</varlistentry>
 
+        <varlistentry>
+          <term>
+            <option>lxc.rootfs.backend</option>
+          </term>
+          <listitem>
+            <para>
+	      <!--
+              specify the rootfs backend type to use, for instance 'dir' or
+	      'zfs'.  While this can be guessed by lxc at container startup,
+	      doing so takes time.  Specifying it here avoids extra
+	      processing.
+		-->
+	      使用するバックエンドのタイプを、例えば 'dir' や 'zfs' のように指定します。
+	      コンテナ起動時に LXC が推測できますが、時間がかかります。これを指定すると、余分な処理を避けられます。
+            </para>
+          </listitem>
+        </varlistentry>
+
       </variablelist>
     </refsect2>
 
@@ -1824,6 +1842,42 @@ mknod errno 0
 	     </para>
 	  </listitem>
 	</varlistentry>
+      </variablelist>
+    </refsect2>
+
+    <refsect2>
+      <title>PR_SET_NO_NEW_PRIVS</title>
+      <para>
+        <!--
+              With PR_SET_NO_NEW_PRIVS active execve() promises not to grant
+              privileges to do anything that could not have been done without
+              the execve() call (for example, rendering the set-user-ID and
+              set-group-ID mode bits, and file capabilities non-functional).
+              Once set, this bit cannot be unset. The setting of this bit is
+              inherited by children created by fork() and clone(), and preserved
+              across execve().
+              Note that PR_SET_NO_NEW_PRIVS is applied after the container has
+              changed into its intended AppArmor profile or SElinux context.
+          -->
+        PR_SET_NO_NEW_PRIVS を付与すると、対象の execve() は、execve() の呼び出しなしでは実行できなかったことに対する特権を許可しなくなります (例えば、set-user-ID、set-group-ID 許可ビットや、ファイルケーパビリティが動作しなくなります)。
+        一度設定されると、このビットは解除できません。このビットの設定は fork() や clone() で生成される子プロセスにも継承され、execve() の前後で保持されます。
+        PR_SET_NO_NEW_PRIVS は、コンテナに適用しようとする AppArmor プロファイルもしくは SELinux コンテキストへの変更がなされたあとに適用されます。
+      </para>
+      <variablelist>
+        <varlistentry>
+          <term>
+            <option>lxc.no_new_privs</option>
+          </term>
+          <listitem>
+            <para>
+	      <!--
+              Specify whether the PR_SET_NO_NEW_PRIVS flag should be set for the
+              container. Set to 1 to activate.
+		-->
+	      コンテナに対して PR_SET_NO_NEW_PRIVS ビットを設定するかどうかを指定します。1 に設定すると有効になります。
+            </para>
+          </listitem>
+        </varlistentry>
       </variablelist>
     </refsect2>
 
@@ -2353,6 +2407,22 @@ mknod errno 0
 	    </para>
 	  </listitem>
 	</varlistentry>
+        <varlistentry>
+          <term>
+            <option>lxc.syslog</option>
+          </term>
+          <listitem>
+            <para>
+	      <!--
+            Send logging info to syslog. It respects the log level defined in
+            <command>lxc.loglevel</command>. The argument should be the syslog
+            facility to use, valid ones are: daemon, local0, local1, local2,
+            local3, local4, local5, local5, local7.
+	    -->
+	      ログ情報を syslog に送ります。ログレベルとして <command>lxc.loglevel</command> の値を使用します。指定する値は使用する syslog の facility です。有効な値は daemon, local0, local1, local2, local3, local4, local5, local5, local6, local7 のいずれかです。
+            </para>
+          </listitem>
+        </varlistentry>
       </variablelist>
     </refsect2>
 

@@ -66,6 +66,7 @@
 #include <net/if.h>
 #include <libgen.h>
 
+#include "bdev.h"
 #include "network.h"
 #include "error.h"
 #include "af_unix.h"
@@ -74,9 +75,8 @@
 #include "conf.h"
 #include "log.h"
 #include "caps.h"       /* for lxc_caps_last_cap() */
-#include "bdev/bdev.h"
-#include "bdev/lxcaufs.h"
-#include "bdev/lxcoverlay.h"
+#include "lxcaufs.h"
+#include "lxcoverlay.h"
 #include "cgroup.h"
 #include "lxclock.h"
 #include "namespace.h"
@@ -510,7 +510,7 @@ out:
 static int mount_rootfs_file(const char *rootfs, const char *target,
 				             const char *options)
 {
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	struct loop_info64 loinfo;
 	int ret = -1, fd = -1, rc;
 	DIR *dir;
@@ -522,7 +522,7 @@ static int mount_rootfs_file(const char *rootfs, const char *target,
 		return -1;
 	}
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 
 		if (!direntp)
 			break;
@@ -719,6 +719,7 @@ static int lxc_mount_auto_mounts(struct lxc_conf *conf, int flags, struct lxc_ha
 			}
 			if (!default_mounts[i].destination) {
 				ERROR("BUG: auto mounts destination %d was NULL", i);
+				free(source);
 				return -1;
 			}
 			/* will act like strdup if %r is not present */
@@ -1130,7 +1131,7 @@ static const struct lxc_devs lxc_devs[] = {
 	{ "console",	S_IFCHR | S_IRUSR | S_IWUSR,	       5, 1	},
 };
 
-static int fill_autodev(const struct lxc_rootfs *rootfs)
+static int fill_autodev(const struct lxc_rootfs *rootfs, bool mount_console)
 {
 	int ret;
 	char path[MAXPATHLEN];
@@ -1152,6 +1153,10 @@ static int fill_autodev(const struct lxc_rootfs *rootfs)
 	cmask = umask(S_IXUSR | S_IXGRP | S_IXOTH);
 	for (i = 0; i < sizeof(lxc_devs) / sizeof(lxc_devs[0]); i++) {
 		const struct lxc_devs *d = &lxc_devs[i];
+
+		if (!strcmp(d->name, "console") && !mount_console)
+			continue;
+
 		ret = snprintf(path, MAXPATHLEN, "%s/dev/%s", rootfs->path ? rootfs->mount : "", d->name);
 		if (ret < 0 || ret >= MAXPATHLEN)
 			return -1;
@@ -1395,8 +1400,7 @@ static int setup_dev_console(const struct lxc_rootfs *rootfs,
 			 const struct lxc_console *console)
 {
 	char path[MAXPATHLEN];
-	struct stat s;
-	int ret;
+	int ret, fd;
 
 	ret = snprintf(path, sizeof(path), "%s/dev/console", rootfs->mount);
 	if (ret >= sizeof(path)) {
@@ -1404,9 +1408,14 @@ static int setup_dev_console(const struct lxc_rootfs *rootfs,
 		return -1;
 	}
 
-	if (access(path, F_OK)) {
-		WARN("rootfs specified but no console found at '%s'", path);
-		return 0;
+	fd = open(path, O_CREAT | O_EXCL, S_IXUSR | S_IXGRP | S_IXOTH);
+	if (fd < 0) {
+		if (errno != EEXIST) {
+			SYSERROR("failed to create console");
+			return -1;
+		}
+	} else {
+		close(fd);
 	}
 
 	if (console->master < 0) {
@@ -1414,14 +1423,9 @@ static int setup_dev_console(const struct lxc_rootfs *rootfs,
 		return 0;
 	}
 
-	if (stat(path, &s)) {
-		SYSERROR("failed to stat '%s'", path);
-		return -1;
-	}
-
-	if (chmod(console->name, s.st_mode)) {
+	if (chmod(console->name, S_IXUSR | S_IXGRP | S_IXOTH)) {
 		SYSERROR("failed to set mode '0%o' to '%s'",
-			 s.st_mode, console->name);
+			 S_IXUSR | S_IXGRP | S_IXOTH, console->name);
 		return -1;
 	}
 
@@ -1630,7 +1634,7 @@ static char *get_field(char *src, int nfields)
 
 static int mount_entry(const char *fsname, const char *target,
 		       const char *fstype, unsigned long mountflags,
-		       const char *data, int optional, const char *rootfs)
+		       const char *data, int optional, int dev, const char *rootfs)
 {
 #ifdef HAVE_STATVFS
 	struct statvfs sb;
@@ -1659,7 +1663,7 @@ static int mount_entry(const char *fsname, const char *target,
 			unsigned long required_flags = rqd_flags;
 			if (sb.f_flag & MS_NOSUID)
 				required_flags |= MS_NOSUID;
-			if (sb.f_flag & MS_NODEV)
+			if (sb.f_flag & MS_NODEV && !dev)
 				required_flags |= MS_NODEV;
 			if (sb.f_flag & MS_RDONLY)
 				required_flags |= MS_RDONLY;
@@ -1781,6 +1785,7 @@ static inline int mount_entry_on_generic(struct mntent *mntent,
 	char *mntdata;
 	int ret;
 	bool optional = hasmntopt(mntent, "optional") != NULL;
+	bool dev = hasmntopt(mntent, "dev") != NULL;
 
 	char *rootfs_path = NULL;
 	if (rootfs && rootfs->path)
@@ -1799,7 +1804,7 @@ static inline int mount_entry_on_generic(struct mntent *mntent,
 	}
 
 	ret = mount_entry(mntent->mnt_fsname, path, mntent->mnt_type, mntflags,
-			  mntdata, optional, rootfs_path);
+			  mntdata, optional, dev, rootfs_path);
 
 	free(mntdata);
 	return ret;
@@ -1985,7 +1990,8 @@ static int setup_mount_entries(const struct lxc_rootfs *rootfs, struct lxc_list 
 static int parse_cap(const char *cap)
 {
 	char *ptr = NULL;
-	int i, capid = -1;
+	size_t i;
+	int capid = -1;
 
 	if (!strcmp(cap, "none"))
 		return -2;
@@ -2515,7 +2521,7 @@ static int instantiate_veth(struct lxc_handler *handler, struct lxc_netdev *netd
 {
 	char veth1buf[IFNAMSIZ], *veth1;
 	char veth2buf[IFNAMSIZ], *veth2;
-	int err, mtu = 0;
+	int bridge_index, err, mtu = 0;
 
 	if (netdev->priv.veth_attr.pair) {
 		veth1 = netdev->priv.veth_attr.pair;
@@ -2568,8 +2574,16 @@ static int instantiate_veth(struct lxc_handler *handler, struct lxc_netdev *netd
 
 	if (netdev->mtu) {
 		mtu = atoi(netdev->mtu);
+		INFO("Retrieved mtu %d", mtu);
 	} else if (netdev->link) {
-		mtu = netdev_get_mtu(netdev->ifindex);
+		bridge_index = if_nametoindex(netdev->link);
+		if (bridge_index) {
+			mtu = netdev_get_mtu(bridge_index);
+			INFO("Retrieved mtu %d from %s", mtu, netdev->link);
+		} else {
+			mtu = netdev_get_mtu(netdev->ifindex);
+			INFO("Retrieved mtu %d from %s", mtu, veth2);
+		}
 	}
 
 	if (mtu) {
@@ -2736,6 +2750,15 @@ static int instantiate_vlan(struct lxc_handler *handler, struct lxc_netdev *netd
 
 	DEBUG("instantiated vlan '%s', ifindex is '%d'", " vlan1000",
 	      netdev->ifindex);
+	if (netdev->mtu) {
+		err = lxc_netdev_set_mtu(peer, atoi(netdev->mtu));
+		if (err) {
+			ERROR("failed to set mtu '%s' for %s : %s",
+			      netdev->mtu, peer, strerror(-err));
+			lxc_netdev_delete_by_name(peer);
+			return -1;
+		}
+	}
 
 	return 0;
 }
@@ -3312,6 +3335,7 @@ void lxc_delete_tty(struct lxc_tty_info *tty_info)
 	}
 
 	free(tty_info->pty_info);
+	tty_info->pty_info = NULL;
 	tty_info->nbtty = 0;
 }
 
@@ -3749,11 +3773,13 @@ int lxc_setup(struct lxc_handler *handler)
 	}
 
 	if (lxc_conf->autodev > 0) {
+		bool mount_console = lxc_conf->console.path && !strcmp(lxc_conf->console.path, "none");
+
 		if (run_lxc_hooks(name, "autodev", lxc_conf, lxcpath, NULL)) {
 			ERROR("failed to run autodev hooks for container '%s'.", name);
 			return -1;
 		}
-		if (fill_autodev(&lxc_conf->rootfs)) {
+		if (fill_autodev(&lxc_conf->rootfs, mount_console)) {
 			ERROR("failed to populate /dev in the container");
 			return -1;
 		}
@@ -4137,6 +4163,7 @@ void lxc_conf_free(struct lxc_conf *conf)
 	free(conf->console.log_path);
 	free(conf->console.path);
 	free(conf->rootfs.mount);
+	free(conf->rootfs.bdev_type);
 	free(conf->rootfs.options);
 	free(conf->rootfs.path);
 	free(conf->logfile);
@@ -4149,6 +4176,7 @@ void lxc_conf_free(struct lxc_conf *conf)
 	free(conf->init_cmd);
 	free(conf->unexpanded_config);
 	free(conf->pty_names);
+	free(conf->syslog);
 	lxc_clear_config_network(conf);
 	free(conf->lsm_aa_profile);
 	free(conf->lsm_se_context);

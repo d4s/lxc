@@ -220,11 +220,13 @@ struct lxc_console {
  * @path       : the rootfs source (directory or device)
  * @mount      : where it is mounted
  * @options    : mount options
+ * @bev_type   : optional backing store type
  */
 struct lxc_rootfs {
 	char *path;
 	char *mount;
 	char *options;
+	char *bdev_type;
 };
 
 /*
@@ -376,6 +378,13 @@ struct lxc_conf {
 
 	/* indicator if the container will be destroyed on shutdown */
 	int ephemeral;
+
+	/* The facility to pass to syslog. Let's users establish as what type of
+	 * program liblxc is supposed to write to the syslog. */
+	char *syslog;
+
+	/* Whether PR_SET_NO_NEW_PRIVS will be set for the container. */
+	bool no_new_privs;
 };
 
 #ifdef HAVE_TLS

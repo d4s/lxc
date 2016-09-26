@@ -38,7 +38,9 @@
 #include <net/if.h>
 #include <time.h>
 #include <dirent.h>
+#include <syslog.h>
 
+#include "bdev.h"
 #include "parse.h"
 #include "config.h"
 #include "confile.h"
@@ -72,6 +74,7 @@ static int config_fstab(const char *, const char *, struct lxc_conf *);
 static int config_rootfs(const char *, const char *, struct lxc_conf *);
 static int config_rootfs_mount(const char *, const char *, struct lxc_conf *);
 static int config_rootfs_options(const char *, const char *, struct lxc_conf *);
+static int config_rootfs_backend(const char *, const char *, struct lxc_conf *);
 static int config_pivotdir(const char *, const char *, struct lxc_conf *);
 static int config_utsname(const char *, const char *, struct lxc_conf *);
 static int config_hook(const char *, const char *, struct lxc_conf *lxc_conf);
@@ -103,6 +106,7 @@ static int config_haltsignal(const char *, const char *, struct lxc_conf *);
 static int config_rebootsignal(const char *, const char *, struct lxc_conf *);
 static int config_stopsignal(const char *, const char *, struct lxc_conf *);
 static int config_start(const char *, const char *, struct lxc_conf *);
+static int config_syslog(const char *, const char *, struct lxc_conf *);
 static int config_monitor(const char *, const char *, struct lxc_conf *);
 static int config_group(const char *, const char *, struct lxc_conf *);
 static int config_environment(const char *, const char *, struct lxc_conf *);
@@ -110,6 +114,7 @@ static int config_init_cmd(const char *, const char *, struct lxc_conf *);
 static int config_init_uid(const char *, const char *, struct lxc_conf *);
 static int config_init_gid(const char *, const char *, struct lxc_conf *);
 static int config_ephemeral(const char *, const char *, struct lxc_conf *);
+static int config_no_new_privs(const char *, const char *, struct lxc_conf *);
 
 static struct lxc_config_t config[] = {
 
@@ -130,6 +135,7 @@ static struct lxc_config_t config[] = {
 	{ "lxc.mount",                config_fstab                },
 	{ "lxc.rootfs.mount",         config_rootfs_mount         },
 	{ "lxc.rootfs.options",       config_rootfs_options       },
+	{ "lxc.rootfs.backend",       config_rootfs_backend       },
 	{ "lxc.rootfs",               config_rootfs               },
 	{ "lxc.pivotdir",             config_pivotdir             },
 	{ "lxc.utsname",              config_utsname              },
@@ -181,6 +187,8 @@ static struct lxc_config_t config[] = {
 	{ "lxc.init_uid",             config_init_uid             },
 	{ "lxc.init_gid",             config_init_gid             },
 	{ "lxc.ephemeral",            config_ephemeral            },
+	{ "lxc.syslog",               config_syslog               },
+	{ "lxc.no_new_privs",	      config_no_new_privs	  },
 };
 
 struct signame {
@@ -271,7 +279,7 @@ static const size_t config_size = sizeof(config)/sizeof(struct lxc_config_t);
 
 extern struct lxc_config_t *lxc_getconfig(const char *key)
 {
-	int i;
+	size_t i;
 
 	for (i = 0; i < config_size; i++)
 		if (!strncmp(config[i].name, key,
@@ -294,7 +302,8 @@ extern struct lxc_config_t *lxc_getconfig(const char *key)
 
 int lxc_listconfigs(char *retv, int inlen)
 {
-	int i, fulllen = 0, len;
+	size_t i;
+	int fulllen = 0, len;
 
 	if (!retv)
 		inlen = 0;
@@ -517,6 +526,7 @@ extern int lxc_list_nicconfigs(struct lxc_conf *c, const char *key,
 	else
 		memset(retv, 0, inlen);
 
+	strprint(retv, inlen, "type\n");
 	strprint(retv, inlen, "script.up\n");
 	strprint(retv, inlen, "script.down\n");
 	if (netdev->type != LXC_NET_EMPTY) {
@@ -604,7 +614,7 @@ static int macvlan_mode(int *valuep, const char *value)
 		{ "passthru", MACVLAN_MODE_PASSTHRU },
 	};
 
-	int i;
+	size_t i;
 
 	for (i = 0; i < sizeof(m)/sizeof(m[0]); i++) {
 		if (strcmp(m[i].name, value))
@@ -1347,7 +1357,7 @@ static int rt_sig_num(const char *signame)
 }
 
 static int sig_parse(const char *signame) {
-	int n;
+	size_t n;
 
 	if (isdigit(*signame)) {
 		return sig_num(signame);
@@ -1780,7 +1790,7 @@ int append_unexp_config_line(const char *line, struct lxc_conf *conf)
 
 static int do_includedir(const char *dirp, struct lxc_conf *lxc_conf)
 {
-	struct dirent dirent, *direntp;
+	struct dirent *direntp;
 	DIR *dir;
 	char path[MAXPATHLEN];
 	int ret = -1, len;
@@ -1791,7 +1801,7 @@ static int do_includedir(const char *dirp, struct lxc_conf *lxc_conf)
 		return -1;
 	}
 
-	while (!readdir_r(dir, &dirent, &direntp)) {
+	while ((direntp = readdir(dir))) {
 		const char *fnam;
 		if (!direntp)
 			break;
@@ -1851,6 +1861,21 @@ static int config_rootfs_options(const char *key, const char *value,
 			       struct lxc_conf *lxc_conf)
 {
 	return config_string_item(&lxc_conf->rootfs.options, value);
+}
+
+static int config_rootfs_backend(const char *key, const char *value,
+			       struct lxc_conf *lxc_conf)
+{
+	if (strlen(value) == 0) {
+		free(lxc_conf->rootfs.bdev_type);
+		lxc_conf->rootfs.bdev_type = NULL;
+	}
+	if (!is_valid_bdev_type(value)) {
+		ERROR("Bad rootfs.backend: '%s'", value);
+		return -1;
+	}
+
+	return config_string_item(&lxc_conf->rootfs.bdev_type, value);
 }
 
 static int config_pivotdir(const char *key, const char *value,
@@ -1944,6 +1969,14 @@ static int parse_line(char *buffer, void *data)
 	value += lxc_char_left_gc(value, strlen(value));
 	value[lxc_char_right_gc(value, strlen(value))] = '\0';
 
+	if (*value == '\'' || *value == '\"') {
+		size_t len = strlen(value);
+		if (len > 1 && value[len-1] == *value) {
+			value[len-1] = '\0';
+			value++;
+		}
+	}
+
 	config = lxc_getconfig(key);
 	if (!config) {
 		ERROR("unknown key %s", key);
@@ -1979,8 +2012,8 @@ int lxc_config_read(const char *file, struct lxc_conf *conf, bool from_include)
 	}
 
 	/* Catch only the top level config file name in the structure */
-	if( ! conf->rcfile )
-		conf->rcfile = strdup( file );
+	if(!conf->rcfile)
+		conf->rcfile = strdup(file);
 
 	return lxc_file_for_each_line(file, parse_line, &c);
 }
@@ -2031,13 +2064,30 @@ signed long lxc_config_parse_arch(const char *arch)
 		{ "i586", PER_LINUX32 },
 		{ "i686", PER_LINUX32 },
 		{ "athlon", PER_LINUX32 },
+		{ "mips", PER_LINUX32 },
+		{ "mipsel", PER_LINUX32 },
+		{ "ppc", PER_LINUX32 },
+		{ "arm", PER_LINUX32 },
+		{ "armv7l", PER_LINUX32 },
+		{ "armhf", PER_LINUX32 },
+		{ "armel", PER_LINUX32 },
+		{ "powerpc", PER_LINUX32 },
 		{ "linux64", PER_LINUX },
 		{ "x86_64", PER_LINUX },
 		{ "amd64", PER_LINUX },
+		{ "mips64", PER_LINUX },
+		{ "mips64el", PER_LINUX },
+		{ "ppc64", PER_LINUX },
+		{ "ppc64le", PER_LINUX },
+		{ "ppc64el", PER_LINUX },
+		{ "powerpc64", PER_LINUX },
+		{ "s390x", PER_LINUX },
+		{ "aarch64", PER_LINUX },
+		{ "arm64", PER_LINUX },
 	};
 	size_t len = sizeof(pername) / sizeof(pername[0]);
 
-	int i;
+	size_t i;
 
 	for (i = 0; i < len; i++) {
 		if (!strcmp(pername[i].name, arch))
@@ -2474,6 +2524,8 @@ int lxc_get_config_item(struct lxc_conf *c, const char *key, char *retv,
 		v = c->console.path;
 	else if (strcmp(key, "lxc.rootfs.mount") == 0)
 		v = c->rootfs.mount;
+	else if (strcmp(key, "lxc.rootfs.backend") == 0)
+		v = c->rootfs.bdev_type;
 	else if (strcmp(key, "lxc.rootfs.options") == 0)
 		v = c->rootfs.options;
 	else if (strcmp(key, "lxc.rootfs") == 0)
@@ -2510,6 +2562,10 @@ int lxc_get_config_item(struct lxc_conf *c, const char *key, char *retv,
 		return lxc_get_conf_int(c, retv, inlen, c->init_gid);
 	else if (strcmp(key, "lxc.ephemeral") == 0)
 		return lxc_get_conf_int(c, retv, inlen, c->ephemeral);
+	else if (strcmp(key, "lxc.syslog") == 0)
+		v = c->syslog;
+	else if (strcmp(key, "lxc.no_new_privs") == 0)
+		return lxc_get_conf_int(c, retv, inlen, c->no_new_privs);
 	else return -1;
 
 	if (!v)
@@ -2889,3 +2945,30 @@ static int config_ephemeral(const char *key, const char *value,
 	return 0;
 }
 
+static int config_syslog(const char *key, const char *value,
+			 struct lxc_conf *lxc_conf)
+{
+	int facility;
+	facility = lxc_syslog_priority_to_int(value);
+	if (facility == -EINVAL) {
+		ERROR("Wrong value for lxc.syslog");
+		return -1;
+	}
+
+	lxc_log_syslog(facility);
+	return config_string_item(&lxc_conf->syslog, value);
+}
+
+static int config_no_new_privs(const char *key, const char *value,
+				    struct lxc_conf *lxc_conf)
+{
+	int v = atoi(value);
+
+	if (v != 0 && v != 1) {
+		ERROR("Wrong value for lxc.no_new_privs. Can only be set to 0 or 1");
+		return -1;
+	}
+	lxc_conf->no_new_privs = v ? true : false;
+
+	return 0;
+}

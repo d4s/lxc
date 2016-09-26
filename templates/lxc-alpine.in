@@ -123,6 +123,8 @@ parse_arch() {
 	case "$1" in
 		x86 | i[3-6]86) echo 'x86';;
 		x86_64 | amd64) echo 'x86_64';;
+		aarch64 | arm64) echo 'aarch64';;
+		armv7) echo 'armv7';;
 		arm*) echo 'armhf';;
 		*) return 1;;
 	esac
@@ -346,6 +348,7 @@ setup_network() {
 	cat <<-EOF > etc/network/interfaces
 		auto eth0
 		iface eth0 inet dhcp
+		hostname \$(hostname)
 	EOF
 }
 
@@ -361,8 +364,12 @@ setup_services() {
 	done
 
 	# default runlevel
-	for svc_name in networking cron; do
-		ln -s /etc/init.d/$svc_name etc/runlevels/default/$svc_name
+	for svc_name in networking cron crond; do
+		# issue 1164: alpine renamed cron to crond
+		# Use the one that exists.
+		if [ -e etc/init.d/$svc_name ]; then
+			ln -s /etc/init.d/$svc_name etc/runlevels/default/$svc_name
+		fi
 	done
 }
 

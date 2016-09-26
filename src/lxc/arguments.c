@@ -40,7 +40,7 @@ static int build_shortopts(const struct option *a_options,
 			   char *a_shortopts, size_t a_size)
 {
 	const struct option *opt;
-	int i = 0;
+	size_t i = 0;
 
 	if (!a_options || !a_shortopts || !a_size)
 		return -1;
@@ -203,6 +203,7 @@ extern int lxc_arguments_parse(struct lxc_arguments *args,
 		case 'o':	args->log_file = optarg; break;
 		case 'l':	args->log_priority = optarg; break;
 		case 'q':	args->quiet = 1; break;
+		case OPT_RCFILE: args->rcfile = optarg; break;
 		case 'P':
 			remove_trailing_slashes(optarg);
 			ret = lxc_arguments_lxcpath_add(args, optarg);
