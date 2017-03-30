@@ -27,9 +27,45 @@ if [ $(id -u) -ne 0 ]; then
 	echo "ERROR: Must run as root."
 	exit 1
 fi
+
+# Test if we're using an overlayfs module that handles symlinks correctly. If
+# not, we skip these tests since overlay clones will not work correctly.
+if modprobe -q overlayfs; then
+        TMPDIR=$(mktemp -d)
+
+        MOUNTDIR="${TMPDIR}/ovl_symlink_test"
+
+        mkdir ${MOUNTDIR}
+
+        mount -t tmpfs none ${MOUNTDIR}
+
+        mkdir "${MOUNTDIR}/lowerdir" "${MOUNTDIR}/upperdir" "${MOUNTDIR}/overlayfs"
+        mount -t overlayfs -o lowerdir="${MOUNTDIR}/lowerdir",upperdir="${MOUNTDIR}/upperdir" none "${MOUNTDIR}/overlayfs"
+
+        CORRECT_LINK_TARGET="${MOUNTDIR}/overlayfs/dummy_file"
+        exec 9> "${CORRECT_LINK_TARGET}"
+
+        DETECTED_LINK_TARGET=$(readlink -q /proc/$$/fd/9)
+
+        # cleanup
+        exec 9>&-
+
+        umount "${MOUNTDIR}/overlayfs"
+        umount ${MOUNTDIR}
+
+        rmdir ${MOUNTDIR}
+
+        # This overlay module does not correctly handle symlinks, so skip the
+        # tests.
+        if [ "${DETECTED_LINK_TARGET}" != "${CORRECT_LINK_TARGET}" ]; then
+                exit 0
+        fi
+fi
+
 which newuidmap >/dev/null 2>&1 || { echo "'newuidmap' command is missing" >&2; exit 1; }
 
 DONE=0
+KNOWN_RELEASES="precise trusty xenial yakkety zesty"
 cleanup() {
 	cd /
 
@@ -119,13 +155,24 @@ else
 	done
 fi
 
+# default release is trusty, or the systems release if recognized
+release=trusty
+if [ -f /etc/lsb-release ]; then
+    . /etc/lsb-release
+    rels=$(ubuntu-distro-info --supported 2>/dev/null) ||
+        rels="$KNOWN_RELEASES"
+    for r in $rels; do
+        [ "$DISTRIB_CODENAME" = "$r" ] && release="$r"
+    done
+fi
+
 # Copy the download template cache if available
 run_cmd mkdir -p $HDIR/.cache/lxc
 [ -d /var/cache/lxc/download ] && \
     cp -R /var/cache/lxc/download $HDIR/.cache/lxc && \
     chown -R $TUSER: $HDIR/.cache/lxc
 
-run_cmd lxc-create -t download -n c1 -- -d ubuntu -r trusty -a $ARCH
+run_cmd lxc-create -t download -n c1 -- -d ubuntu -r $release -a $ARCH
 
 # Make sure we can start it - twice
 
@@ -138,7 +185,7 @@ for count in `seq 1 2`; do
     run_cmd lxc-info -n c1
     run_cmd lxc-attach -n c1 -- /bin/true
 
-    run_cmd lxc-stop -n c1
+    run_cmd lxc-stop -n c1 -k
 done
 
 run_cmd lxc-copy -s -n c1 -N c2
@@ -146,7 +193,7 @@ run_cmd lxc-start -n c2 -d
 p1=$(run_cmd lxc-info -n c2 -p -H)
 [ "$p1" != "-1" ] || { echo "Failed to start container c2"; false; }
 
-run_cmd lxc-stop -n c2
+run_cmd lxc-stop -n c2 -k
 
 if which cgm >/dev/null 2>&1; then
     echo "Testing containers under different cgroups per subsystem"

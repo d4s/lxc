@@ -50,9 +50,9 @@
 #include "confile.h"
 #include "arguments.h"
 
-#define OPT_SHARE_NET OPT_USAGE+1
-#define OPT_SHARE_IPC OPT_USAGE+2
-#define OPT_SHARE_UTS OPT_USAGE+3
+#define OPT_SHARE_NET OPT_USAGE + 1
+#define OPT_SHARE_IPC OPT_USAGE + 2
+#define OPT_SHARE_UTS OPT_USAGE + 3
 
 lxc_log_define(lxc_start_ui, lxc);
 
@@ -86,7 +86,7 @@ static int ensure_path(char **confpath, const char *path)
 			goto err;
 		}
 	}
-	err = 0;
+	err = EXIT_SUCCESS;
 
 err:
 	free(fullpath);
@@ -231,6 +231,12 @@ int main(int argc, char *argv[])
 		exit(err);
 	lxc_log_options_no_override();
 
+	if (access(my_args.lxcpath[0], O_RDONLY) < 0) {
+		if (!my_args.quiet)
+			fprintf(stderr, "You lack access to %s\n", my_args.lxcpath[0]);
+		exit(err);
+	}
+
 	const char *lxcpath = my_args.lxcpath[0];
 
 	/*
@@ -252,6 +258,11 @@ int main(int argc, char *argv[])
 			ERROR("Failed to load rcfile");
 			lxc_container_put(c);
 			exit(err);
+		}
+		c->configfile = strdup(my_args.rcfile);
+		if (!c->configfile) {
+			ERROR("Out of memory setting new config filename");
+			goto out;
 		}
 	} else {
 		int rc;
@@ -275,9 +286,20 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/* We do not check here whether the container is defined, because we
+	 * support volatile containers. Which means the container does not need
+	 * to be created for it to be started. You can just pass a configuration
+	 * file as argument and start the container right away.
+	 */
+
+	if (!c->may_control(c)) {
+		fprintf(stderr, "Insufficent privileges to control %s\n", c->name);
+		goto out;
+	}
+
 	if (c->is_running(c)) {
 		ERROR("Container is already running.");
-		err = 0;
+		err = EXIT_SUCCESS;
 		goto out;
 	}
 	/*

@@ -10,6 +10,7 @@ templates_SCRIPTS = \
 	lxc-debian \
 	lxc-download \
 	lxc-fedora \
+	lxc-fedora-legacy \
 	lxc-gentoo \
 	lxc-openmandriva \
 	lxc-opensuse \
@@ -20,4 +21,6 @@ templates_SCRIPTS = \
 	lxc-sshd \
 	lxc-ubuntu \
 	lxc-ubuntu-cloud \
-	lxc-sparclinux
+	lxc-sparclinux \
+	lxc-voidlinux \
+	lxc-sabayon

@@ -82,7 +82,7 @@ static const struct option my_longopts[] = {
 	{ "daemon", no_argument, 0, 'd'},
 	{ "ephemeral", no_argument, 0, 'e'},
 	{ "mount", required_argument, 0, 'm'},
-	{ "backingstore", required_argument, 0, 'B'},
+	{ "backingstorage", required_argument, 0, 'B'},
 	{ "fssize", required_argument, 0, 'L'},
 	{ "keepdata", no_argument, 0, 'D'},
 	{ "keepname", no_argument, 0, 'K'},
@@ -184,7 +184,7 @@ int main(int argc, char *argv[])
 	lxc_log_options_no_override();
 
 	if (geteuid()) {
-		if (access(my_args.lxcpath[0], O_RDWR) < 0) {
+		if (access(my_args.lxcpath[0], O_RDONLY) < 0) {
 			if (!my_args.quiet)
 				fprintf(stderr, "You lack access to %s\n", my_args.lxcpath[0]);
 			exit(ret);
@@ -620,6 +620,8 @@ static int my_parser(struct lxc_arguments *args, int c, char *arg)
 			return -1;
 		break;
 	case 'B':
+		if (strcmp(arg, "overlay") == 0)
+			arg = "overlayfs";
 		args->bdevtype = arg;
 		break;
 	case 't':

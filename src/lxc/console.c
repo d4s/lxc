@@ -21,7 +21,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -258,6 +257,14 @@ int lxc_setup_tios(int fd, struct termios *oldtios)
 		return -1;
 	}
 
+	/* ensure we don't end up in an endless loop:
+	 * The kernel might fire SIGTTOU while an
+	 * ioctl() in tcsetattr() is executed. When the ioctl()
+	 * is resumed and retries, the signal handler interrupts it again.
+	 */
+	signal (SIGTTIN, SIG_IGN);
+	signal (SIGTTOU, SIG_IGN);
+
 	newtios = *oldtios;
 
 	/* We use the same settings that ssh does. */
@@ -266,7 +273,7 @@ int lxc_setup_tios(int fd, struct termios *oldtios)
 #ifdef IUCLC
 	newtios.c_iflag &= ~IUCLC;
 #endif
-	newtios.c_lflag &= ~(ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHONL);
+	newtios.c_lflag &= ~(TOSTOP | ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHONL);
 #ifdef IEXTEN
 	newtios.c_lflag &= ~IEXTEN;
 #endif
@@ -577,7 +584,9 @@ int lxc_console_cb_tty_stdin(int fd, uint32_t events, void *cbdata,
 	struct lxc_tty_state *ts = cbdata;
 	char c;
 
-	assert(fd == ts->stdinfd);
+	if (fd != ts->stdinfd)
+		return 1;
+
 	if (lxc_read_nointr(ts->stdinfd, &c, 1) <= 0)
 		return 1;
 
@@ -607,7 +616,9 @@ int lxc_console_cb_tty_master(int fd, uint32_t events, void *cbdata,
 	char buf[1024];
 	int r, w;
 
-	assert(fd == ts->masterfd);
+	if (fd != ts->masterfd)
+		return 1;
+
 	r = lxc_read_nointr(fd, buf, sizeof(buf));
 	if (r <= 0)
 		return 1;

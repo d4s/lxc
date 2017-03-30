@@ -35,6 +35,11 @@
 
 #include "initutils.h"
 
+/* Useful macros */
+/* Maximum number for 64 bit integer is a string with 21 digits: 2^64 - 1 = 21 */
+#define LXC_NUMSTRLEN64 21
+#define LXC_LINELEN 4096
+
 /* returns 1 on success, 0 if there were any failures */
 extern int lxc_rmdir_onedev(char *path, const char *exclude);
 extern int get_u16(unsigned short *val, const char *arg, int base);
@@ -249,7 +254,7 @@ extern char *lxc_string_join(const char *sep, const char **parts, bool use_as_pr
  */
 extern char **lxc_normalize_path(const char *path);
 /* remove multiple slashes from the path, e.g. ///foo//bar -> /foo/bar */
-extern bool lxc_deslashify(char *path);
+extern bool lxc_deslashify(char **path);
 extern char *lxc_append_paths(const char *first, const char *second);
 /* Note: the following two functions use strtok(), so they will never
  *       consider an empty element, even if two delimiters are next to
@@ -258,6 +263,8 @@ extern char *lxc_append_paths(const char *first, const char *second);
 extern bool lxc_string_in_list(const char *needle, const char *haystack, char sep);
 extern char **lxc_string_split(const char *string, char sep);
 extern char **lxc_string_split_and_trim(const char *string, char sep);
+/* Append string to NULL-terminated string array. */
+extern int lxc_append_string(char ***list, char *entry);
 
 /* some simple array manipulation utilities */
 typedef void (*lxc_free_fn)(void *);
@@ -293,7 +300,7 @@ extern bool dir_exists(const char *path);
 uint64_t fnv_64a_buf(void *buf, size_t len, uint64_t hval);
 
 int detect_shared_rootfs(void);
-int detect_ramfs_rootfs(void);
+bool detect_ramfs_rootfs(void);
 char *on_path(char *cmd, const char *rootfs);
 bool file_exists(const char *f);
 bool cgns_supported(void);
@@ -310,7 +317,18 @@ int open_devnull(void);
 int set_stdfds(int fd);
 int null_stdfds(void);
 int lxc_count_file_lines(const char *fn);
+int lxc_preserve_ns(const int pid, const char *ns);
 
 /* Check whether a signal is blocked by a process. */
 bool task_blocking_signal(pid_t pid, int signal);
+
+/* Helper functions to parse numbers. */
+int lxc_safe_uint(const char *numstr, unsigned int *converted);
+int lxc_safe_int(const char *numstr, int *converted);
+int lxc_safe_long(const char *numstr, long int *converted);
+
+/* Switch to a new uid and gid. */
+int lxc_switch_uid_gid(uid_t uid, gid_t gid);
+int lxc_setgroups(int size, gid_t list[]);
+
 #endif /* __LXC_UTILS_H */

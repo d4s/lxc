@@ -68,6 +68,7 @@ src/lxc/version.h
 
 src/python-lxc/build/
 src/python-lxc/lxc/__pycache__/
+src/python-lxc/lxc.egg-info/
 
 src/tests/lxc-test-device-add-remove
 src/tests/lxc-test-attach
@@ -91,7 +92,7 @@ src/tests/lxc-test-shutdowntest
 src/tests/lxc-test-snapshot
 src/tests/lxc-test-startone
 src/tests/lxc-test-usernic
-src/tests/lxc-test-utils
+src/tests/lxc-test-utils*
 src/tests/lxc-usernic-test
 
 config/compile

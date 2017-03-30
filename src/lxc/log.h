@@ -34,6 +34,7 @@
 #include <strings.h>
 #include <stdbool.h>
 #include <syslog.h>
+#include <time.h>
 
 #include "conf.h"
 
@@ -46,7 +47,7 @@
 #endif
 
 #define LXC_LOG_PREFIX_SIZE	32
-#define LXC_LOG_BUFFER_SIZE	1024
+#define LXC_LOG_BUFFER_SIZE	4096
 
 /* This attribute is required to silence clang warnings */
 #if defined(__GNUC__)
@@ -83,7 +84,7 @@ struct lxc_log_locinfo {
 struct lxc_log_event {
 	const char*		category;
 	int			priority;
-	struct timeval		timestamp;
+	struct timespec		timestamp;
 	struct lxc_log_locinfo	*locinfo;
 	const char		*fmt;
 	va_list			*vap;
@@ -251,7 +252,10 @@ ATTR_UNUSED static inline void LXC_##PRIORITY(struct lxc_log_locinfo* locinfo,	\
 		};							\
 		va_list va_ref;						\
 									\
-		gettimeofday(&evt.timestamp, NULL);			\
+		/* clock_gettime() is explicitly marked as MT-Safe	\
+		 * without restrictions. So let's use it for our	\
+		 * logging stamps. */					\
+		clock_gettime(CLOCK_REALTIME, &evt.timestamp);		\
 									\
 		va_start(va_ref, format);				\
 		evt.vap = &va_ref;					\

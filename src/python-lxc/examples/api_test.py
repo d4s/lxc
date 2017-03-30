@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 #
 # api_test.py: Test/demo of the python3-lxc API
 #
@@ -65,7 +66,7 @@ except:
 print("Creating rootfs using 'download', arch=%s" % arch)
 container.create("download", 0,
                  {"dist": "ubuntu",
-                  "release": "trusty",
+                  "release": "xenial",
                   "arch": arch})
 
 assert(container.defined)

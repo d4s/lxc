@@ -25,6 +25,22 @@
 import os
 import subprocess
 
+# Fix build when PIE is enabled (must run before setuptools import)
+for var in ("LDFLAGS", "CFLAGS"):
+    current = os.environ.get(var, None)
+    if not current:
+        continue
+
+    new = []
+    for flag in current.split(" "):
+        if flag.lower() in ("-pie", "-fpie"):
+            if "-fPIC" not in new:
+                new.append("-fPIC")
+            continue
+        new.append(flag)
+
+    os.environ[var] = " ".join(new)
+
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext as BuildExtCommand
 

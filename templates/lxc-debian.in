@@ -181,6 +181,14 @@ EOF
         echo "Timezone in container is not configured. Adjust it manually."
     fi
 
+    if [ -n "$authkey" ]; then
+        local ssh_dir_path="${rootfs}/root/.ssh"
+        mkdir -p "$ssh_dir_path"
+        cp "$authkey" "${ssh_dir_path}/authorized_keys"
+        chmod 700 "$ssh_dir_path"
+        echo "Inserted SSH public key from '$authkey' into /root/.ssh/authorized_keys"
+    fi
+
     return 0
 }
 
@@ -231,11 +239,11 @@ configure_debian_systemd()
     num_tty=$4
 
     # this only works if we have getty@.service to manipulate
-    if [ -f "${rootfs}/lib/systemd/system/getty\@.service" ]; then
+    if [ -f "${rootfs}/lib/systemd/system/getty@.service" ]; then
        sed -e 's/^ConditionPathExists=/# ConditionPathExists=/' \
            -e 's/After=dev-%i.device/After=/' \
-           < "${rootfs}/lib/systemd/system/getty\@.service" \
-           > "${rootfs}/etc/systemd/system/getty\@.service"
+           < "${rootfs}/lib/systemd/system/getty@.service" \
+           > "${rootfs}/etc/systemd/system/getty@.service"
     fi
 
     # just in case systemd is not installed
@@ -325,7 +333,6 @@ download_debian()
 $init,\
 ifupdown,\
 locales,\
-libui-dialog-perl,\
 dialog,\
 isc-dhcp-client,\
 netbase,\
@@ -349,9 +356,6 @@ openssh-server
     if [ ! -f $releasekeyring ]; then
         releasekeyring="$cache/archive-key.gpg"
         case $release in
-            "squeeze")
-                gpgkeyname="archive-key-6.0"
-                ;;
             "wheezy")
                 gpgkeyname="archive-key-7.0"
                 ;;
@@ -543,7 +547,7 @@ EOF
     # If the container isn't running a native architecture, setup multiarch
     if [ "$interpreter" = "" -a "${arch}" != "${hostarch}" ]; then
         # Test if dpkg supports multiarch
-        if ! chroot "$rootfs" dpkg --print-foreign-architecture 2>&1; then
+        if ! chroot "$rootfs" dpkg --print-foreign-architectures 2>&1; then
             chroot "$rootfs" dpkg --add-architecture "${hostarch}"
         fi
     fi
@@ -604,12 +608,13 @@ Usage: $1 -h|--help -p|--path=<path> [-c|--clean] [-a|--arch=<arch>] [-r|--relea
                                      [--mirror=<mirror>] [--security-mirror=<security mirror>]
                                      [--package=<package_name1,package_name2,...>]
                                      [-I|--interpreter-path=<interpreter path>]
-                                     [-F | --flush-cache]
+                                     [-F | --flush-cache] [-S|--auth-key=<keyfile>]
 
 Options :
 
   -h, --help             print this help text
   -p, --path=PATH        directory where config and rootfs of this VM will be kept
+  -S, --auth-key=KEYFILE SSH public key to inject into the container as the root user.
   -a, --arch=ARCH        The container architecture. Can be one of: i686, x86_64,
                          amd64, armhf, armel, powerpc. Defaults to host arch.
   -r, --release=RELEASE  Debian release. Can be one of: wheezy, jessie, stretch, sid.
@@ -638,7 +643,7 @@ EOF
     return 0
 }
 
-options=$(getopt -o hp:n:a:r:cI:F -l arch:,clean,help,enable-non-free,mirror:,name:,packages:,path:,release:,rootfs:,security-mirror:,interpreter-path:,flush-cache -- "$@")
+options=$(getopt -o hp:n:a:r:cI:FS: -l arch:,auth-key:,clean,help,enable-non-free,mirror:,name:,packages:,path:,release:,rootfs:,security-mirror:,interpreter-path:,flush-cache -- "$@")
 if [ $? -ne 0 ]; then
         usage "$(basename "$0")"
         exit 1
@@ -654,6 +659,8 @@ elif [ "$arch" = "x86_64" ]; then
     arch="amd64"
 elif [ "$arch" = "armv7l" ]; then
     arch="armhf"
+elif [ "$arch" = "ppc" ]; then
+    arch="powerpc"
 elif [ "$arch" = "ppc64le" ]; then
     arch="ppc64el"
 elif [ "$arch" = "mips" -a "$littleendian" = "yes" ]; then
@@ -672,6 +679,7 @@ do
            --)                shift 1; break ;;
 
         -a|--arch)            arch=$2; shift 2;;
+        -S|--auth-key)        authkey=$2; shift 2;;
         -I|--interpreter-path)
                               interpreter="$2"; shift 2;;
         -c|--clean)           clean=1; shift 1;;
@@ -751,6 +759,19 @@ fi
 if [ "$(id -u)" != "0" ]; then
     echo "This script should be run as 'root'"
     exit 1
+fi
+
+if [ -n "$authkey" ]; then
+    if [ ! -f "$authkey" ]; then
+	echo "SSH keyfile '$authkey' not found"
+	exit 1
+    fi
+    # This is mostly to prevent accidental uage of the private key instead
+    # of the public key.
+    if [ "${authkey: -4}" != ".pub" ]; then
+	echo "SSH keyfile '$authkey' does not end with '.pub'"
+	exit 1
+    fi
 fi
 
 current_release=$(wget "${MIRROR}/dists/stable/Release" -O - 2> /dev/null | head |awk '/^Codename: (.*)$/ { print $2; }')

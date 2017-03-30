@@ -23,7 +23,6 @@
 
 #include "config.h"
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -83,7 +82,8 @@ static int add_to_simple_array(char ***array, ssize_t *capacity, char *value)
 {
 	ssize_t count = 0;
 
-	assert(array);
+	if (!array)
+		return -1;
 
 	if (*array)
 		for (; (*array)[count]; count++);
@@ -99,7 +99,8 @@ static int add_to_simple_array(char ***array, ssize_t *capacity, char *value)
 		*capacity = new_capacity;
 	}
 
-	assert(*array);
+	if (!(*array))
+		return -1;
 
 	(*array)[count] = value;
 	return 0;
@@ -107,6 +108,8 @@ static int add_to_simple_array(char ***array, ssize_t *capacity, char *value)
 
 static int my_parser(struct lxc_arguments* args, int c, char* arg)
 {
+	char **it;
+	char *del;
 	int ret;
 
 	switch (c) {
@@ -125,6 +128,30 @@ static int my_parser(struct lxc_arguments* args, int c, char* arg)
 		break;
 	case 's':
 		namespace_flags = 0;
+
+		/* The identifiers for namespaces used with lxc-attach as given
+		 * on the manpage do not align with the standard identifiers.
+		 * This affects network, mount, and uts namespaces. The standard
+		 * identifiers are: "mnt", "uts", and "net" whereas lxc-attach
+		 * uses "MOUNT", "UTSNAME", and "NETWORK". So let's use some
+		 * cheap memmove()s to replace them by their standard
+		 * identifiers. Let's illustrate this with an example:
+		 * Assume the string:
+		 *
+		 *	"IPC|MOUNT|PID"
+		 *
+		 * then we memmove()
+		 *
+		 *	dest: del + 1 == ONT|PID
+		 *	src:  del + 3 == NT|PID
+		 */
+		while ((del = strstr(arg, "MOUNT")))
+			memmove(del + 1, del + 3, strlen(del) - 2);
+
+		for (it = (char *[]){"NETWORK", "UTSNAME", NULL}; it && *it; it++)
+			while ((del = strstr(arg, *it)))
+				memmove(del + 3, del + 7, strlen(del) - 6);
+
 		ret = lxc_fill_namespace_flags(arg, &namespace_flags);
 		if (ret)
 			return -1;
@@ -154,7 +181,9 @@ static int my_parser(struct lxc_arguments* args, int c, char* arg)
 	case 'L':
 		args->console_log = arg;
 		break;
-	case 'f': args->rcfile = arg; break;
+	case 'f':
+		args->rcfile = arg;
+		break;
 	}
 
 	return 0;
@@ -367,7 +396,7 @@ int main(int argc, char *argv[])
 	lxc_log_options_no_override();
 
 	if (geteuid()) {
-		if (access(my_args.lxcpath[0], O_RDWR) < 0) {
+		if (access(my_args.lxcpath[0], O_RDONLY) < 0) {
 			if (!my_args.quiet)
 				fprintf(stderr, "You lack access to %s\n", my_args.lxcpath[0]);
 			exit(EXIT_FAILURE);
