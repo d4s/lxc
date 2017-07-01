@@ -114,13 +114,13 @@ case "$with_init_script" in
 			fedora|altlinux|opensuse*)
 				init_script=systemd
 				;;
-			redhat|centos|oracle|oracleserver|sparclinux|plamo)
+			redhat|oracle|oracleserver|sparclinux|plamo)
 				init_script=sysvinit
 				;;
-			debian|raspbian)
-				init_script=upstart,systemd
+			centos)
+				init_script=sysvinit,systemd
 				;;
-			ubuntu)
+			debian|raspbian|ubuntu)
 				init_script=upstart,systemd
 				;;
 			pld)
@@ -372,7 +372,9 @@ AM_CONDITIONAL([ENABLE_CAP], [test "x$enable_capabilities" = "xyes"])
 AM_COND_IF([ENABLE_CAP],
 	[AC_CHECK_HEADER([sys/capability.h],[],[AC_MSG_ERROR([You must install the libcap development package in order to compile lxc])])
 	AC_CHECK_LIB(cap,cap_set_proc,[],[AC_MSG_ERROR([You must install the libcap development package in order to compile lxc])])
-	AC_SUBST([CAP_LIBS], [-lcap])])
+        # Test whether we support getting file capabilities via cap_get_file().
+        AC_CHECK_LIB(cap,cap_get_file, AC_DEFINE(LIBCAP_SUPPORTS_FILE_CAPABILITIES,1,[Have cap_get_file]),[],[])
+        AC_SUBST([CAP_LIBS], [-lcap])])
 
 # HAVE_SCMP_FILTER_CTX=1 will tell us we have libseccomp api >= 1.0.0
 OLD_CFLAGS="$CFLAGS"
@@ -639,7 +641,7 @@ AC_CHECK_DECLS([PR_SET_NO_NEW_PRIVS], [], [], [#include <sys/prctl.h>])
 AC_CHECK_DECLS([PR_GET_NO_NEW_PRIVS], [], [], [#include <sys/prctl.h>])
 
 # Check for some headers
-AC_CHECK_HEADERS([sys/signalfd.h pty.h ifaddrs.h sys/memfd.h sys/personality.h utmpx.h sys/timerfd.h])
+AC_CHECK_HEADERS([sys/signalfd.h pty.h ifaddrs.h sys/memfd.h sys/personality.h utmpx.h sys/timerfd.h sys/resource.h])
 
 # lookup major()/minor()/makedev()
 AC_HEADER_MAJOR
@@ -665,6 +667,10 @@ AC_CHECK_FUNCS([fgetln],
 	AM_CONDITIONAL(HAVE_FGETLN, true)
 	AC_DEFINE(HAVE_FGETLN,1,[Have fgetln]),
 	AM_CONDITIONAL(HAVE_FGETLN, false))
+AC_CHECK_FUNCS([prlimit],
+	AM_CONDITIONAL(HAVE_PRLIMIT, true)
+	AC_DEFINE(HAVE_PRLIMIT,1,[Have prlimit]),
+	AM_CONDITIONAL(HAVE_PRLIMIT, false))
 
 # Check for some libraries
 AC_SEARCH_LIBS(sem_open, [rt pthread])

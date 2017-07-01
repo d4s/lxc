@@ -30,6 +30,9 @@
 #include <net/if.h>
 #include <sys/param.h>
 #include <sys/types.h>
+#if HAVE_SYS_RESOURCE_H
+#include <sys/resource.h>
+#endif
 #include <stdbool.h>
 
 #include "list.h"
@@ -111,15 +114,17 @@ union netdev_p {
 
 /*
  * Defines a structure to configure a network device
- * @link       : lxc.network.link, name of bridge or host iface to attach if any
- * @name       : lxc.network.name, name of iface on the container side
+ * @link       : lxc.net.[i].link, name of bridge or host iface to attach if any
+ * @name       : lxc.net.[i].name, name of iface on the container side
  * @flags      : flag of the network device (IFF_UP, ... )
  * @ipv4       : a list of ipv4 addresses to be set on the network device
  * @ipv6       : a list of ipv6 addresses to be set on the network device
  * @upscript   : a script filename to be executed during interface configuration
  * @downscript : a script filename to be executed during interface destruction
+ * @idx        : network counter
  */
 struct lxc_netdev {
+	ssize_t idx;
 	int type;
 	int flags;
 	int ifindex;
@@ -147,6 +152,23 @@ struct lxc_netdev {
 struct lxc_cgroup {
 	char *subsystem;
 	char *value;
+};
+
+#if !HAVE_SYS_RESOURCE_H
+# define RLIM_INFINITY ((unsigned long)-1)
+struct rlimit {
+	unsigned long rlim_cur;
+	unsigned long rlim_max;
+};
+#endif
+/*
+ * Defines a structure to configure resource limits to set via setrlimit().
+ * @resource : the resource name in lowercase without the RLIMIT_ prefix
+ * @limit    : the limit to set
+ */
+struct lxc_limit {
+	char *resource;
+	struct rlimit limit;
 };
 
 enum idtype {
@@ -263,7 +285,6 @@ enum {
 /*
  * Defines the global container configuration
  * @rootfs     : root directory to run the container
- * @pivotdir   : pivotdir path, if not set default will be used
  * @mount      : list of mount points
  * @tty        : numbers of tty
  * @pts        : new pts instance
@@ -329,7 +350,6 @@ struct lxc_conf {
 	int haltsignal; // signal used to halt container
 	int rebootsignal; // signal used to reboot container
 	int stopsignal; // signal used to hard stop container
-	unsigned int kmsg;  // if 1, create /dev/kmsg symlink
 	char *rcfile;	// Copy of the top level rcfile we read
 
 	// Logfile and logleve can be set in a container config file.
@@ -385,6 +405,9 @@ struct lxc_conf {
 
 	/* Whether PR_SET_NO_NEW_PRIVS will be set for the container. */
 	bool no_new_privs;
+
+	/* RLIMIT_* limits */
+	struct lxc_list limits;
 };
 
 #ifdef HAVE_TLS
@@ -407,7 +430,7 @@ extern void lxc_conf_free(struct lxc_conf *conf);
 extern int pin_rootfs(const char *rootfs);
 
 extern int lxc_requests_empty_network(struct lxc_handler *handler);
-extern int lxc_create_network(struct lxc_handler *handler);
+extern int lxc_setup_networks_in_parent_namespaces(struct lxc_handler *handler);
 extern bool lxc_delete_network(struct lxc_handler *handler);
 extern int lxc_assign_network(const char *lxcpath, char *lxcname,
 			      struct lxc_list *networks, pid_t pid);
@@ -417,8 +440,6 @@ extern int lxc_find_gateway_addresses(struct lxc_handler *handler);
 extern int lxc_create_tty(const char *name, struct lxc_conf *conf);
 extern void lxc_delete_tty(struct lxc_tty_info *tty_info);
 
-extern int lxc_clear_config_network(struct lxc_conf *c);
-extern int lxc_clear_nic(struct lxc_conf *c, const char *key);
 extern int lxc_clear_config_caps(struct lxc_conf *c);
 extern int lxc_clear_config_keepcaps(struct lxc_conf *c);
 extern int lxc_clear_cgroups(struct lxc_conf *c, const char *key);
@@ -428,7 +449,9 @@ extern int lxc_clear_hooks(struct lxc_conf *c, const char *key);
 extern int lxc_clear_idmaps(struct lxc_conf *c);
 extern int lxc_clear_groups(struct lxc_conf *c);
 extern int lxc_clear_environment(struct lxc_conf *c);
+extern int lxc_clear_limits(struct lxc_conf *c, const char *key);
 extern int lxc_delete_autodev(struct lxc_handler *handler);
+extern void lxc_clear_includes(struct lxc_conf *conf);
 
 extern int do_rootfs_setup(struct lxc_conf *conf, const char *name,
 			   const char *lxcpath);
@@ -440,13 +463,16 @@ extern int do_rootfs_setup(struct lxc_conf *conf, const char *name,
 struct cgroup_process_info;
 extern int lxc_setup(struct lxc_handler *handler);
 
+extern int setup_resource_limits(struct lxc_list *limits, pid_t pid);
+
 extern void lxc_restore_phys_nics_to_netns(int netnsfd, struct lxc_conf *conf);
 
-extern int find_unmapped_nsuid(struct lxc_conf *conf, enum idtype idtype);
+extern int find_unmapped_nsid(struct lxc_conf *conf, enum idtype idtype);
 extern int mapped_hostid(unsigned id, struct lxc_conf *conf, enum idtype idtype);
 extern int chown_mapped_root(char *path, struct lxc_conf *conf);
-extern int ttys_shift_ids(struct lxc_conf *c);
-extern int userns_exec_1(struct lxc_conf *conf, int (*fn)(void *), void *data);
+extern int lxc_ttys_shift_ids(struct lxc_conf *c);
+extern int userns_exec_1(struct lxc_conf *conf, int (*fn)(void *), void *data,
+			 const char *fn_name);
 extern int parse_mntopts(const char *mntopts, unsigned long *mntflags,
 			 char **mntdata);
 extern void tmp_proc_unmount(struct lxc_conf *lxc_conf);

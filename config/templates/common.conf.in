@@ -1,7 +1,7 @@
 # Default configuration shared by all containers
 
 # Setup the LXC devices in /dev/lxc/
-lxc.devttydir = lxc
+lxc.tty.dir = lxc
 
 # Allow for 1024 pseudo terminals
 lxc.pts = 1024
@@ -11,9 +11,6 @@ lxc.tty = 4
 
 # Drop some harmful capabilities
 lxc.cap.drop = mac_admin mac_override sys_time sys_module sys_rawio
-
-# Set the pivot directory
-lxc.pivotdir = lxc_putold
 
 # Ensure hostname is changed on clone
 lxc.hook.clone = @LXCHOOKDIR@/clonehostname

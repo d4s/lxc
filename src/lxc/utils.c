@@ -23,6 +23,7 @@
 
 #include "config.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -98,7 +99,7 @@ static int _recursive_rmdir(char *dirname, dev_t pdev,
 
 	dir = opendir(dirname);
 	if (!dir) {
-		ERROR("%s: failed to open %s", __func__, dirname);
+		ERROR("failed to open %s", dirname);
 		return -1;
 	}
 
@@ -131,10 +132,10 @@ static int _recursive_rmdir(char *dirname, dev_t pdev,
 				case ENOTDIR:
 					ret = unlink(pathname);
 					if (ret)
-						INFO("%s: failed to remove %s", __func__, pathname);
+						INFO("Failed to remove %s", pathname);
 					break;
 				default:
-					SYSERROR("%s: failed to rmdir %s", __func__, pathname);
+					SYSERROR("Failed to rmdir %s", pathname);
 					failed = 1;
 					break;
 				}
@@ -144,7 +145,7 @@ static int _recursive_rmdir(char *dirname, dev_t pdev,
 
 		ret = lstat(pathname, &mystat);
 		if (ret) {
-			ERROR("%s: failed to stat %s", __func__, pathname);
+			ERROR("Failed to stat %s", pathname);
 			failed = 1;
 			continue;
 		}
@@ -160,20 +161,20 @@ static int _recursive_rmdir(char *dirname, dev_t pdev,
 				failed=1;
 		} else {
 			if (unlink(pathname) < 0) {
-				SYSERROR("%s: failed to delete %s", __func__, pathname);
+				SYSERROR("Failed to delete %s", pathname);
 				failed=1;
 			}
 		}
 	}
 
 	if (rmdir(dirname) < 0 && !btrfs_try_remove_subvol(dirname) && !hadexclude) {
-		ERROR("%s: failed to delete %s", __func__, dirname);
+		ERROR("Failed to delete %s", dirname);
 		failed=1;
 	}
 
 	ret = closedir(dir);
 	if (ret) {
-		ERROR("%s: failed to close directory %s", __func__, dirname);
+		ERROR("Failed to close directory %s", dirname);
 		failed=1;
 	}
 
@@ -212,7 +213,7 @@ extern int lxc_rmdir_onedev(char *path, const char *exclude)
 	if (lstat(path, &mystat) < 0) {
 		if (errno == ENOENT)
 			return 0;
-		ERROR("%s: failed to stat %s", __func__, path);
+		ERROR("Failed to stat %s", path);
 		return -1;
 	}
 
@@ -1199,7 +1200,7 @@ bool detect_ramfs_rootfs(void)
 	return false;
 }
 
-char *on_path(char *cmd, const char *rootfs) {
+char *on_path(const char *cmd, const char *rootfs) {
 	char *path = NULL;
 	char *entry = NULL;
 	char *saveptr = NULL;
@@ -1754,49 +1755,61 @@ int safe_mount(const char *src, const char *dest, const char *fstype,
  *
  * NOTE: not to be called from inside the container namespace!
  */
-int mount_proc_if_needed(const char *rootfs)
+int lxc_mount_proc_if_needed(const char *rootfs)
 {
 	char path[MAXPATHLEN];
-	char link[20];
-	int link_to_pid, linklen, ret;
-	int mypid;
+	int link_to_pid, linklen, mypid, ret;
+	char link[LXC_NUMSTRLEN64] = {0};
 
 	ret = snprintf(path, MAXPATHLEN, "%s/proc/self", rootfs);
 	if (ret < 0 || ret >= MAXPATHLEN) {
 		SYSERROR("proc path name too long");
 		return -1;
 	}
-	memset(link, 0, 20);
-	linklen = readlink(path, link, 20);
-	mypid = (int)getpid();
-	INFO("I am %d, /proc/self points to '%s'", mypid, link);
+
+	linklen = readlink(path, link, LXC_NUMSTRLEN64);
+
 	ret = snprintf(path, MAXPATHLEN, "%s/proc", rootfs);
 	if (ret < 0 || ret >= MAXPATHLEN) {
 		SYSERROR("proc path name too long");
 		return -1;
 	}
-	if (linklen < 0) /* /proc not mounted */
+
+	/* /proc not mounted */
+	if (linklen < 0) {
+		if (mkdir(path, 0755) && errno != EEXIST)
+			return -1;
 		goto domount;
+	} else if (linklen >= LXC_NUMSTRLEN64) {
+		link[linklen - 1] = '\0';
+		ERROR("readlink returned truncated content: \"%s\"", link);
+		return -1;
+	}
+
+	mypid = getpid();
+	INFO("I am %d, /proc/self points to \"%s\"", mypid, link);
+
 	if (lxc_safe_int(link, &link_to_pid) < 0)
 		return -1;
-	if (link_to_pid != mypid) {
-		/* wrong /procs mounted */
-		umount2(path, MNT_DETACH); /* ignore failure */
-		goto domount;
-	}
-	/* the right proc is already mounted */
-	return 0;
+
+	/* correct procfs is already mounted */
+	if (link_to_pid == mypid)
+		return 0;
+
+	ret = umount2(path, MNT_DETACH);
+	if (ret < 0)
+		WARN("failed to umount \"%s\" with MNT_DETACH", path);
 
 domount:
-	if (!strcmp(rootfs,"")) /* rootfs is NULL */
+	/* rootfs is NULL */
+	if (!strcmp(rootfs, ""))
 		ret = mount("proc", path, "proc", 0, NULL);
 	else
 		ret = safe_mount("proc", path, "proc", 0, NULL, rootfs);
-
 	if (ret < 0)
 		return -1;
 
-	INFO("Mounted /proc in container for security transition");
+	INFO("mounted /proc in container for security transition");
 	return 1;
 }
 
@@ -1910,12 +1923,14 @@ bool task_blocking_signal(pid_t pid, int signal)
 		return bret;
 
 	while (getline(&line, &n, f) != -1) {
-		if (!strncmp(line, "SigBlk:\t", 8))
-			if (sscanf(line + 8, "%lx", &sigblk) != 1)
-				goto out;
+		if (strncmp(line, "SigBlk:\t", 8))
+			continue;
+
+		if (sscanf(line + 8, "%lx", &sigblk) != 1)
+			goto out;
 	}
 
-	if (sigblk & signal)
+	if (sigblk & (1LU << (signal - 1)))
 		bret = true;
 
 out:
@@ -1987,18 +2002,47 @@ int lxc_safe_uint(const char *numstr, unsigned int *converted)
 	char *err = NULL;
 	unsigned long int uli;
 
+	while (isspace(*numstr))
+		numstr++;
+
+	if (*numstr == '-')
+		return -EINVAL;
+
 	errno = 0;
 	uli = strtoul(numstr, &err, 0);
-	if (errno > 0)
-		return -errno;
+	if (errno == ERANGE && uli == ULONG_MAX)
+		return -ERANGE;
 
-	if (!err || err == numstr || *err != '\0')
+	if (err == numstr || *err != '\0')
 		return -EINVAL;
 
 	if (uli > UINT_MAX)
 		return -ERANGE;
 
 	*converted = (unsigned int)uli;
+	return 0;
+}
+
+int lxc_safe_ulong(const char *numstr, unsigned long *converted)
+{
+	char *err = NULL;
+	unsigned long int uli;
+
+	while (isspace(*numstr))
+		numstr++;
+
+	if (*numstr == '-')
+		return -EINVAL;
+
+	errno = 0;
+	uli = strtoul(numstr, &err, 0);
+	if (errno == ERANGE && uli == ULONG_MAX)
+		return -ERANGE;
+
+	if (err == numstr || *err != '\0')
+		return -EINVAL;
+
+	*converted = uli;
 	return 0;
 }
 
@@ -2009,13 +2053,16 @@ int lxc_safe_int(const char *numstr, int *converted)
 
 	errno = 0;
 	sli = strtol(numstr, &err, 0);
-	if (errno > 0)
-		return -errno;
+	if (errno == ERANGE && (sli == LONG_MAX || sli == LONG_MIN))
+		return -ERANGE;
 
-	if (!err || err == numstr || *err != '\0')
+	if (errno != 0 && sli == 0)
 		return -EINVAL;
 
-	if (sli > INT_MAX)
+	if (err == numstr || *err != '\0')
+		return -EINVAL;
+
+	if (sli > INT_MAX || sli < INT_MIN)
 		return -ERANGE;
 
 	*converted = (int)sli;
@@ -2029,14 +2076,14 @@ int lxc_safe_long(const char *numstr, long int *converted)
 
 	errno = 0;
 	sli = strtol(numstr, &err, 0);
-	if (errno > 0)
-		return -errno;
+	if (errno == ERANGE && (sli == LONG_MAX || sli == LONG_MIN))
+		return -ERANGE;
 
-	if (!err || err == numstr || *err != '\0')
+	if (errno != 0 && sli == 0)
 		return -EINVAL;
 
-	if (sli > LONG_MAX)
-		return -ERANGE;
+	if (err == numstr || *err != '\0')
+		return -EINVAL;
 
 	*converted = sli;
 	return 0;
@@ -2069,4 +2116,220 @@ int lxc_setgroups(int size, gid_t list[])
 	NOTICE("Dropped additional groups.");
 
 	return 0;
+}
+
+static int lxc_get_unused_loop_dev_legacy(char *loop_name)
+{
+	struct dirent *dp;
+	struct loop_info64 lo64;
+	DIR *dir;
+	int dfd = -1, fd = -1, ret = -1;
+
+	dir = opendir("/dev");
+	if (!dir)
+		return -1;
+
+	while ((dp = readdir(dir))) {
+		if (!dp)
+			break;
+
+		if (strncmp(dp->d_name, "loop", 4) != 0)
+			continue;
+
+		dfd = dirfd(dir);
+		if (dfd < 0)
+			continue;
+
+		fd = openat(dfd, dp->d_name, O_RDWR);
+		if (fd < 0)
+			continue;
+
+		ret = ioctl(fd, LOOP_GET_STATUS64, &lo64);
+		if (ret < 0) {
+			if (ioctl(fd, LOOP_GET_STATUS64, &lo64) == 0 ||
+			    errno != ENXIO) {
+				close(fd);
+				fd = -1;
+				continue;
+			}
+		}
+
+		ret = snprintf(loop_name, LO_NAME_SIZE, "/dev/%s", dp->d_name);
+		if (ret < 0 || ret >= LO_NAME_SIZE) {
+			close(fd);
+			fd = -1;
+			continue;
+		}
+
+		break;
+	}
+
+	closedir(dir);
+
+	if (fd < 0)
+		return -1;
+
+	return fd;
+}
+
+static int lxc_get_unused_loop_dev(char *name_loop)
+{
+	int loop_nr, ret;
+	int fd_ctl = -1, fd_tmp = -1;
+
+	fd_ctl = open("/dev/loop-control", O_RDWR | O_CLOEXEC);
+	if (fd_ctl < 0)
+		return -ENODEV;
+
+	loop_nr = ioctl(fd_ctl, LOOP_CTL_GET_FREE);
+	if (loop_nr < 0)
+		goto on_error;
+
+	ret = snprintf(name_loop, LO_NAME_SIZE, "/dev/loop%d", loop_nr);
+	if (ret < 0 || ret >= LO_NAME_SIZE)
+		goto on_error;
+
+	fd_tmp = open(name_loop, O_RDWR | O_CLOEXEC);
+	if (fd_tmp < 0)
+		goto on_error;
+
+on_error:
+	close(fd_ctl);
+	return fd_tmp;
+}
+
+int lxc_prepare_loop_dev(const char *source, char *loop_dev, int flags)
+{
+	int ret;
+	struct loop_info64 lo64;
+	int fd_img = -1, fret = -1, fd_loop = -1;
+
+	fd_loop = lxc_get_unused_loop_dev(loop_dev);
+	if (fd_loop < 0) {
+		if (fd_loop == -ENODEV)
+			fd_loop = lxc_get_unused_loop_dev_legacy(loop_dev);
+		else
+			goto on_error;
+	}
+
+	fd_img = open(source, O_RDWR | O_CLOEXEC);
+	if (fd_img < 0)
+		goto on_error;
+
+	ret = ioctl(fd_loop, LOOP_SET_FD, fd_img);
+	if (ret < 0)
+		goto on_error;
+
+	memset(&lo64, 0, sizeof(lo64));
+	lo64.lo_flags = flags;
+
+	ret = ioctl(fd_loop, LOOP_SET_STATUS64, &lo64);
+	if (ret < 0)
+		goto on_error;
+
+	fret = 0;
+
+on_error:
+	if (fd_img >= 0)
+		close(fd_img);
+
+	if (fret < 0 && fd_loop >= 0) {
+		close(fd_loop);
+		fd_loop = -1;
+	}
+
+	return fd_loop;
+}
+
+int lxc_unstack_mountpoint(const char *path, bool lazy)
+{
+	int ret;
+	int umounts = 0;
+
+pop_stack:
+	ret = umount2(path, lazy ? MNT_DETACH : 0);
+	if (ret < 0) {
+		/* We consider anything else than EINVAL deadly to prevent going
+		 * into an infinite loop. (The other alternative is constantly
+		 * parsing /proc/self/mountinfo which is yucky and probably
+		 * racy.)
+		 */
+		if (errno != EINVAL)
+			return -errno;
+	} else {
+		/* Just stop counting when this happens. That'd just be so
+		 * stupid that we won't even bother trying to report back the
+		 * correct value anymore.
+		 */
+		if (umounts != INT_MAX)
+			umounts++;
+		/* We succeeded in umounting. Make sure that there's no other
+		 * mountpoint stacked underneath.
+		 */
+		goto pop_stack;
+	}
+
+	return umounts;
+}
+
+int run_command(char *buf, size_t buf_size, int (*child_fn)(void *), void *args)
+{
+	pid_t child;
+	int ret, fret, pipefd[2];
+	ssize_t bytes;
+
+	/* Make sure our callers do not receive unitialized memory. */
+	if (buf_size > 0 && buf)
+		buf[0] = '\0';
+
+	if (pipe(pipefd) < 0) {
+		SYSERROR("failed to create pipe");
+		return -1;
+	}
+
+	child = fork();
+	if (child < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		SYSERROR("failed to create new process");
+		return -1;
+	}
+
+	if (child == 0) {
+		/* Close the read-end of the pipe. */
+		close(pipefd[0]);
+
+		/* Redirect std{err,out} to write-end of the
+		 * pipe.
+		 */
+		ret = dup2(pipefd[1], STDOUT_FILENO);
+		if (ret >= 0)
+			ret = dup2(pipefd[1], STDERR_FILENO);
+
+		/* Close the write-end of the pipe. */
+		close(pipefd[1]);
+
+		if (ret < 0) {
+			SYSERROR("failed to duplicate std{err,out} file descriptor");
+			exit(EXIT_FAILURE);
+		}
+
+		/* Does not return. */
+		child_fn(args);
+		ERROR("failed to exec command");
+		exit(EXIT_FAILURE);
+	}
+
+	/* close the write-end of the pipe */
+	close(pipefd[1]);
+
+	bytes = read(pipefd[0], buf, (buf_size > 0) ? (buf_size - 1) : 0);
+	if (bytes > 0)
+		buf[bytes - 1] = '\0';
+
+	fret = wait_for_pid(child);
+	/* close the read-end of the pipe */
+	close(pipefd[0]);
+
+	return fret;
 }

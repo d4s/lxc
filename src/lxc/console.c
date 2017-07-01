@@ -121,6 +121,11 @@ struct lxc_tty_state *lxc_console_sigwinch_init(int srcfd, int dstfd)
 	ts->masterfd = dstfd;
 	ts->sigfd = -1;
 
+	if (!isatty(srcfd)) {
+		INFO("fd %d does not refer to a tty device", srcfd);
+		return ts;
+	}
+
 	/* add tty to list to be scanned at SIGWINCH time */
 	lxc_list_add_elem(&ts->node, ts);
 	lxc_list_add_tail(&lxc_ttys, &ts->node);
@@ -128,30 +133,33 @@ struct lxc_tty_state *lxc_console_sigwinch_init(int srcfd, int dstfd)
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGWINCH);
 	if (sigprocmask(SIG_BLOCK, &mask, &ts->oldmask)) {
-		SYSERROR("failed to block SIGWINCH.");
+		SYSERROR("failed to block SIGWINCH");
 		ts->sigfd = -1;
+		lxc_list_del(&ts->node);
 		return ts;
 	}
 
 	ts->sigfd = signalfd(-1, &mask, 0);
 	if (ts->sigfd < 0) {
-		SYSERROR("failed to get signalfd.");
+		SYSERROR("failed to create signal fd");
 		sigprocmask(SIG_SETMASK, &ts->oldmask, NULL);
 		ts->sigfd = -1;
+		lxc_list_del(&ts->node);
 		return ts;
 	}
 
-	DEBUG("%d got SIGWINCH fd %d", getpid(), ts->sigfd);
+	DEBUG("process %d created signal fd %d to handle SIGWINCH events", getpid(), ts->sigfd);
 	return ts;
 }
 
 void lxc_console_sigwinch_fini(struct lxc_tty_state *ts)
 {
-	if (ts->sigfd >= 0)
+	if (ts->sigfd >= 0) {
 		close(ts->sigfd);
+		lxc_list_del(&ts->node);
+		sigprocmask(SIG_SETMASK, &ts->oldmask, NULL);
+	}
 
-	lxc_list_del(&ts->node);
-	sigprocmask(SIG_SETMASK, &ts->oldmask, NULL);
 	free(ts);
 }
 
@@ -292,7 +300,7 @@ int lxc_setup_tios(int fd, struct termios *oldtios)
 
 static void lxc_console_peer_proxy_free(struct lxc_console *console)
 {
-	if (console->tty_state && console->tty_state->sigfd != -1) {
+	if (console->tty_state) {
 		lxc_console_sigwinch_fini(console->tty_state);
 		console->tty_state = NULL;
 	}
@@ -415,16 +423,17 @@ void lxc_console_free(struct lxc_conf *conf, int fd)
 	}
 }
 
-static void lxc_console_peer_default(struct lxc_console *console)
+static int lxc_console_peer_default(struct lxc_console *console)
 {
 	struct lxc_tty_state *ts;
 	const char *path = console->path;
+	int fd;
+	int ret = 0;
 
-	/* if no console was given, try current controlling terminal, there
-	 * won't be one if we were started as a daemon (-d)
+	/* If no console was given, try current controlling terminal, there
+	 * won't be one if we were started as a daemon (-d).
 	 */
 	if (!path && !access("/dev/tty", F_OK)) {
-		int fd;
 		fd = open("/dev/tty", O_RDWR);
 		if (fd >= 0) {
 			close(fd);
@@ -432,25 +441,29 @@ static void lxc_console_peer_default(struct lxc_console *console)
 		}
 	}
 
-	if (!path)
+	if (!path) {
+		errno = ENOTTY;
+		DEBUG("process does not have a controlling terminal");
 		goto out;
+	}
 
-	DEBUG("opening %s for console peer", path);
-	console->peer = lxc_unpriv(open(path, O_CLOEXEC | O_RDWR | O_CREAT |
-					O_APPEND, 0600));
-	if (console->peer < 0)
-		goto out;
+	console->peer = lxc_unpriv(open(path, O_CLOEXEC | O_RDWR | O_CREAT | O_APPEND, 0600));
+	if (console->peer < 0) {
+		ERROR("failed to open \"%s\": %s", path, strerror(errno));
+		return -ENOTTY;
+	}
+	DEBUG("using \"%s\" as peer tty device", path);
 
-	DEBUG("using '%s' as console", path);
-
-	if (!isatty(console->peer))
-		goto err1;
+	if (!isatty(console->peer)) {
+		ERROR("file descriptor for file \"%s\" does not refer to a tty device", path);
+		goto on_error1;
+	}
 
 	ts = lxc_console_sigwinch_init(console->peer, console->master);
 	console->tty_state = ts;
 	if (!ts) {
-		WARN("Unable to install SIGWINCH");
-		goto err1;
+		WARN("unable to install SIGWINCH handler");
+		goto on_error1;
 	}
 
 	lxc_console_winsz(console->peer, console->master);
@@ -458,23 +471,27 @@ static void lxc_console_peer_default(struct lxc_console *console)
 	console->tios = malloc(sizeof(*console->tios));
 	if (!console->tios) {
 		SYSERROR("failed to allocate memory");
-		goto err1;
+		ret = -ENOMEM;
+		goto on_error1;
 	}
 
 	if (lxc_setup_tios(console->peer, console->tios) < 0)
-		goto err2;
+		goto on_error2;
+	else
+		goto out;
 
-	return;
-
-err2:
+on_error2:
 	free(console->tios);
 	console->tios = NULL;
-err1:
+	ret = -ENOTTY;
+
+on_error1:
 	close(console->peer);
 	console->peer = -1;
+	ret = -ENOTTY;
+
 out:
-	DEBUG("no console peer");
-	return;
+	return ret;
 }
 
 void lxc_console_delete(struct lxc_console *console)
@@ -503,21 +520,24 @@ int lxc_console_create(struct lxc_conf *conf)
 	int ret;
 
 	if (conf->is_execute) {
-		INFO("no console for lxc-execute.");
+		INFO("not allocating a console device for lxc-execute.");
 		return 0;
 	}
 
-	if (!conf->rootfs.path)
+	if (!conf->rootfs.path) {
+		INFO("container does not have a rootfs, console device will be shared with the host");
 		return 0;
+	}
 
-	if (console->path && !strcmp(console->path, "none"))
+	if (console->path && !strcmp(console->path, "none")) {
+		INFO("no console requested");
 		return 0;
+	}
 
 	process_lock();
-	ret = openpty(&console->master, &console->slave,
-		    console->name, NULL, NULL);
+	ret = openpty(&console->master, &console->slave, console->name, NULL, NULL);
 	process_unlock();
-	if (ret) {
+	if (ret < 0) {
 		SYSERROR("failed to allocate a pty");
 		return -1;
 	}
@@ -532,17 +552,19 @@ int lxc_console_create(struct lxc_conf *conf)
 		goto err;
 	}
 
-	lxc_console_peer_default(console);
+	ret = lxc_console_peer_default(console);
+	if (ret < 0) {
+		ERROR("failed to allocate peer tty device");
+		goto err;
+	}
 
 	if (console->log_path) {
-		console->log_fd = lxc_unpriv(open(console->log_path,
-						  O_CLOEXEC | O_RDWR |
-						  O_CREAT | O_APPEND, 0600));
+		console->log_fd = lxc_unpriv(open(console->log_path, O_CLOEXEC | O_RDWR | O_CREAT | O_APPEND, 0600));
 		if (console->log_fd < 0) {
-			SYSERROR("failed to open '%s'", console->log_path);
+			SYSERROR("failed to open console log file \"%s\"", console->log_path);
 			goto err;
 		}
-		DEBUG("using '%s' as console log", console->log_path);
+		DEBUG("using \"%s\" as console log file", console->log_path);
 	}
 
 	return 0;
@@ -647,16 +669,17 @@ int lxc_console(struct lxc_container *c, int ttynum,
 	struct lxc_epoll_descr descr;
 	struct termios oldtios;
 	struct lxc_tty_state *ts;
+	int istty = 0;
 
-	if (!isatty(stdinfd)) {
-		ERROR("stdin is not a tty");
-		return -1;
-	}
-
-	ret = lxc_setup_tios(stdinfd, &oldtios);
-	if (ret) {
-		ERROR("failed to setup tios");
-		return -1;
+	istty = isatty(stdinfd);
+	if (istty) {
+		ret = lxc_setup_tios(stdinfd, &oldtios);
+		if (ret) {
+			ERROR("failed to setup terminal properties");
+			return -1;
+		}
+	} else {
+		INFO("fd %d does not refer to a tty device", stdinfd);
 	}
 
 	ttyfd = lxc_cmd_console(c->name, &ttynum, &masterfd, c->config_path);
@@ -683,9 +706,12 @@ int lxc_console(struct lxc_container *c, int ttynum,
 	ts->escape = escape;
 	ts->winch_proxy = c->name;
 	ts->winch_proxy_lxcpath = c->config_path;
+	ts->stdoutfd = stdoutfd;
 
-	lxc_console_winsz(stdinfd, masterfd);
-	lxc_cmd_console_winch(ts->winch_proxy, ts->winch_proxy_lxcpath);
+	if (istty) {
+		lxc_console_winsz(stdinfd, masterfd);
+		lxc_cmd_console_winch(ts->winch_proxy, ts->winch_proxy_lxcpath);
+	}
 
 	ret = lxc_mainloop_open(&descr);
 	if (ret) {
@@ -727,14 +753,15 @@ int lxc_console(struct lxc_container *c, int ttynum,
 err4:
 	lxc_mainloop_close(&descr);
 err3:
-	if (ts->sigfd != -1)
-		lxc_console_sigwinch_fini(ts);
+	lxc_console_sigwinch_fini(ts);
 err2:
 	close(masterfd);
 	close(ttyfd);
 err1:
-	tcsetattr(stdinfd, TCSAFLUSH, &oldtios);
+	if (istty) {
+		if (tcsetattr(stdinfd, TCSAFLUSH, &oldtios) < 0)
+			WARN("failed to reset terminal properties: %s.", strerror(errno));
+	}
 
 	return ret;
 }
-

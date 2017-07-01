@@ -203,6 +203,7 @@ Options :\n\
 int main(int argc, char *argv[])
 {
 	int ret = EXIT_FAILURE;
+	struct lxc_log log;
 	/*
 	 * The lxc parser requires that my_args.name is set. So let's satisfy
 	 * that condition by setting a dummy name which is never used.
@@ -218,8 +219,14 @@ int main(int argc, char *argv[])
 	 * We set the first argument that usually takes my_args.name to NULL so
 	 * that the log is only used when the user specifies a file.
 	 */
-	if (lxc_log_init(NULL, my_args.log_file, my_args.log_priority,
-			 my_args.progname, my_args.quiet, my_args.lxcpath[0]))
+	log.name = NULL;
+	log.file = my_args.log_file;
+	log.level = my_args.log_priority;
+	log.prefix = my_args.progname;
+	log.quiet = my_args.quiet;
+	log.lxcpath = my_args.lxcpath[0];
+
+	if (lxc_log_init(&log))
 		exit(EXIT_FAILURE);
 	lxc_log_options_no_override();
 
@@ -356,7 +363,7 @@ static int ls_get(struct ls **m, size_t *size, const struct lxc_arguments *args,
 	}
 
 	/* Do not do more work than is necessary right from the start. */
-	if (args->ls_active || (args->ls_active && args->ls_frozen))
+	if (args->ls_active || args->ls_frozen)
 		num = list_active_containers(path, &containers, NULL);
 	else
 		num = list_all_containers(path, &containers, NULL);

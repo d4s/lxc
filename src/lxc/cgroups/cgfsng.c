@@ -101,6 +101,12 @@ struct hierarchy **hierarchies;
  */
 char *cgroup_use;
 
+/*
+ * @lxc_cgfsng_debug - whether to print debug info to stdout for the cgfsng
+ * driver
+ */
+static bool lxc_cgfsng_debug;
+
 static void free_string_list(char **clist)
 {
 	if (clist) {
@@ -777,8 +783,10 @@ static char **get_controllers(char **klist, char **nlist, char *line)
 		return NULL;
 	/* note - if we change how mountinfo works, then our caller
 	 * will need to verify /sys/fs/cgroup/ in this field */
-	if (strncmp(p, "/sys/fs/cgroup/", 15) != 0)
+	if (strncmp(p, "/sys/fs/cgroup/", 15) != 0) {
+		INFO("cgfsng: found hierarchy not under /sys/fs/cgroup: \"%s\"", p);
 		return NULL;
+	}
 	p += 15;
 	p2 = strchr(p, ' ');
 	if (!p2) {
@@ -990,41 +998,40 @@ static void trim(char *s)
 		s[--len] = '\0';
 }
 
-static void print_init_debuginfo(struct cgfsng_handler_data *d)
+static void lxc_cgfsng_print_handler_data(const struct cgfsng_handler_data *d)
+{
+	printf("Cgroup information:\n");
+	printf("  container name: %s\n", d->name ? d->name : "(null)");
+	printf("  lxc.cgroup.use: %s\n", cgroup_use ? cgroup_use : "(null)");
+	printf("  lxc.cgroup.pattern: %s\n", d->cgroup_pattern ? d->cgroup_pattern : "(null)");
+	printf("  cgroup: %s\n", d->container_cgroup ? d->container_cgroup : "(null)");
+}
+
+static void lxc_cgfsng_print_hierarchies()
 {
 	struct hierarchy **it;
 	int i;
 
-	if (!getenv("LXC_DEBUG_CGFSNG"))
-		return;
-
-	DEBUG("Cgroup information:");
-	DEBUG("  container name: %s", d->name ? d->name : "(null)");
-	DEBUG("  lxc.cgroup.use: %s", cgroup_use ? cgroup_use : "(null)");
-	DEBUG("  lxc.cgroup.pattern: %s", d->cgroup_pattern ? d->cgroup_pattern : "(null)");
-	DEBUG("  cgroup: %s", d->container_cgroup ? d->container_cgroup : "(null)");
 	if (!hierarchies) {
-		DEBUG("  No hierarchies found.");
+		printf("  No hierarchies found.");
 		return;
 	}
-	DEBUG("  Hierarchies:");
+	printf("  Hierarchies:\n");
 	for (i = 0, it = hierarchies; it && *it; it++, i++) {
 		char **cit;
 		int j;
-		DEBUG("  %d: base_cgroup %s", i, (*it)->base_cgroup ? (*it)->base_cgroup : "(null)");
-		DEBUG("      mountpoint %s", (*it)->mountpoint ? (*it)->mountpoint : "(null)");
-		DEBUG("      controllers:");
+		printf("  %d: base_cgroup %s\n", i, (*it)->base_cgroup ? (*it)->base_cgroup : "(null)");
+		printf("      mountpoint %s\n", (*it)->mountpoint ? (*it)->mountpoint : "(null)");
+		printf("      controllers:\n");
 		for (j = 0, cit = (*it)->controllers; cit && *cit; cit++, j++)
-			DEBUG("      %d: %s", j, *cit);
+			printf("      %d: %s\n", j, *cit);
 	}
 }
 
-static void print_basecg_debuginfo(char *basecginfo, char **klist, char **nlist)
+static void lxc_cgfsng_print_basecg_debuginfo(char *basecginfo, char **klist, char **nlist)
 {
 	int k;
 	char **it;
-	if (!getenv("LXC_DEBUG_CGFSNG"))
-		return;
 
 	printf("basecginfo is:\n");
 	printf("%s\n", basecginfo);
@@ -1033,6 +1040,12 @@ static void print_basecg_debuginfo(char *basecginfo, char **klist, char **nlist)
 		printf("kernel subsystem %d: %s\n", k, *it);
 	for (k = 0, it = nlist; it && *it; it++, k++)
 		printf("named subsystem %d: %s\n", k, *it);
+}
+
+static void lxc_cgfsng_print_debuginfo(const struct cgfsng_handler_data *d)
+{
+	lxc_cgfsng_print_handler_data(d);
+	lxc_cgfsng_print_hierarchies();
 }
 
 /*
@@ -1064,7 +1077,8 @@ static bool parse_hierarchies(void)
 
 	get_existing_subsystems(&klist, &nlist);
 
-	print_basecg_debuginfo(basecginfo, klist, nlist);
+	if (lxc_cgfsng_debug)
+		lxc_cgfsng_print_basecg_debuginfo(basecginfo, klist, nlist);
 
 	/* we support simple cgroup mounts and lxcfs mounts */
 	while (getline(&line, &len, f) != -1) {
@@ -1116,11 +1130,18 @@ static bool parse_hierarchies(void)
 	fclose(f);
 	free(line);
 
+	if (lxc_cgfsng_debug) {
+		printf("writeable subsystems:\n");
+		lxc_cgfsng_print_hierarchies();
+	}
+
 	/* verify that all controllers in cgroup.use and all crucial
 	 * controllers are accounted for
 	 */
-	if (!all_controllers_found())
+	if (!all_controllers_found()) {
+		INFO("cgfsng: not all controllers were find, deferring to cgfs driver");
 		return false;
+	}
 
 	return true;
 }
@@ -1156,7 +1177,8 @@ static void *cgfsng_init(const char *name)
 	}
 	d->cgroup_pattern = must_copy_string(cgroup_pattern);
 
-	print_init_debuginfo(d);
+	if (lxc_cgfsng_debug)
+		lxc_cgfsng_print_debuginfo(d);
 
 	return d;
 
@@ -1232,13 +1254,13 @@ next:
 
 	if (rmdir(dirname) < 0) {
 		if (!r)
-			WARN("%s: failed to delete %s: %m", __func__, dirname);
+			WARN("failed to delete %s: %s", dirname, strerror(errno));
 		r = -1;
 	}
 
 	if (closedir(dir) < 0) {
 		if (!r)
-			WARN("%s: failed to delete %s: %m", __func__, dirname);
+			WARN("failed to delete %s: %s", dirname, strerror(errno));
 		r = -1;
 	}
 	return r;
@@ -1262,7 +1284,7 @@ void recursive_destroy(char *path, struct lxc_conf *conf)
 {
 	int r;
 	if (conf && !lxc_list_empty(&conf->id_map))
-		r = userns_exec_1(conf, rmdir_wrapper, path);
+		r = userns_exec_1(conf, rmdir_wrapper, path, "rmdir_wrapper");
 	else
 		r = cgroup_rmdir(path);
 
@@ -1294,8 +1316,12 @@ static void cgfsng_destroy(void *hdata, struct lxc_conf *conf)
 
 struct cgroup_ops *cgfsng_ops_init(void)
 {
+	if (getenv("LXC_DEBUG_CGFSNG"))
+		lxc_cgfsng_debug = true;
+
 	if (!collect_hierarchy_info())
 		return NULL;
+
 	return &cgfsng_ops;
 }
 
@@ -1451,16 +1477,18 @@ static int chown_cgroup_wrapper(void *data)
 		 */
 		fullpath = must_make_path(path, "tasks", NULL);
 		if (chown(fullpath, destuid, 0) < 0 && errno != ENOENT)
-			WARN("Failed chowning %s to %d: %m", fullpath, (int) destuid);
+			WARN("Failed chowning %s to %d: %s", fullpath, (int) destuid,
+			     strerror(errno));
 		if (chmod(fullpath, 0664) < 0)
-			WARN("Error chmoding %s: %m", path);
+			WARN("Error chmoding %s: %s", path, strerror(errno));
 		free(fullpath);
 
 		fullpath = must_make_path(path, "cgroup.procs", NULL);
 		if (chown(fullpath, destuid, 0) < 0 && errno != ENOENT)
-			WARN("Failed chowning %s to %d: %m", fullpath, (int) destuid);
+			WARN("Failed chowning %s to %d: %s", fullpath, (int) destuid,
+			     strerror(errno));
 		if (chmod(fullpath, 0664) < 0)
-			WARN("Error chmoding %s: %m", path);
+			WARN("Error chmoding %s: %s", path, strerror(errno));
 		free(fullpath);
 	}
 
@@ -1481,7 +1509,8 @@ static bool cgfsns_chown(void *hdata, struct lxc_conf *conf)
 	wrap.d = d;
 	wrap.origuid = geteuid();
 
-	if (userns_exec_1(conf, chown_cgroup_wrapper, &wrap) < 0) {
+	if (userns_exec_1(conf, chown_cgroup_wrapper, &wrap,
+			  "chown_cgroup_wrapper") < 0) {
 		ERROR("Error requesting cgroup chown in new namespace");
 		return false;
 	}
@@ -1522,7 +1551,8 @@ static int mount_cgroup_full(int type, struct hierarchy *h, char *dest,
 	char *source = must_make_path(h->mountpoint, h->base_cgroup, container_cgroup, NULL);
 	char *rwpath = must_make_path(dest, h->base_cgroup, container_cgroup, NULL);
 	if (mount(source, rwpath, "cgroup", MS_BIND, NULL) < 0)
-		WARN("Failed to mount %s read-write: %m", rwpath);
+		WARN("Failed to mount %s read-write: %s", rwpath,
+		     strerror(errno));
 	INFO("Made %s read-write", rwpath);
 	free(rwpath);
 	free(source);

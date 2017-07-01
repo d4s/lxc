@@ -503,14 +503,14 @@ copy_configuration()
 
     # if there is exactly one veth network entry, make sure it has an
     # associated hwaddr.
-    nics=`grep -e '^lxc\.network\.type[ \t]*=[ \t]*veth' $path/config | wc -l`
+    nics=`grep -e '^lxc\.net\.0\.type[ \t]*=[ \t]*veth' $path/config | wc -l`
     if [ $nics -eq 1 ]; then
-        grep -q "^lxc.network.hwaddr" $path/config || sed -i -e "/^lxc\.network\.type[ \t]*=[ \t]*veth/a lxc.network.hwaddr = 00:16:3e:$(openssl rand -hex 3| sed 's/\(..\)/\1:/g; s/.$//')" $path/config
+        grep -q "^lxc.net.0.hwaddr" $path/config || sed -i -e "/^lxc\.net\.0\.type[ \t]*=[ \t]*veth/a lxc.net.0.hwaddr = 00:16:3e:$(openssl rand -hex 3| sed 's/\(..\)/\1:/g; s/.$//')" $path/config
     fi
 
     # Generate the configuration file
     ## Relocate all the network config entries
-    sed -i -e "/lxc.network/{w ${path}/config-network" -e "d}" $path/config
+    sed -i -e "/lxc.net.0/{w ${path}/config-network" -e "d}" $path/config
 
     ## Relocate any other config entries
     sed -i -e "/lxc./{w ${path}/config-auto" -e "d}" $path/config
@@ -531,7 +531,7 @@ copy_configuration()
     [ -e "$path/config-auto" ] && cat $path/config-auto >> $path/config && rm $path/config-auto
     grep -q "^lxc.rootfs" $path/config 2>/dev/null || echo "lxc.rootfs = $rootfs" >> $path/config
     cat <<EOF >> $path/config
-lxc.utsname = $name
+lxc.uts.name = $name
 lxc.arch = $arch
 EOF
 
@@ -674,7 +674,7 @@ $1 -h|--help [-a|--arch] [-b|--bindhome <user>] [-d|--debug]
    [-F | --flush-cache] [-r|--release <release>] [-v|--variant] [ -S | --auth-key <keyfile>]
    [--rootfs <rootfs>] [--packages <packages>] [-u|--user <user>] [--password <password>]
    [--mirror <url>] [--security-mirror <url>]
-release: the ubuntu release (e.g. precise): defaults to host release on ubuntu, otherwise uses latest LTS
+release: the ubuntu release (e.g. xenial): defaults to host release on ubuntu, otherwise uses latest LTS
 variant: debootstrap variant to use (see debootstrap(8))
 bindhome: bind <user>'s home into the container
           The ubuntu user will not be created, and <user> will have
@@ -694,7 +694,7 @@ if [ $? -ne 0 ]; then
 fi
 eval set -- "$options"
 
-release=precise # Default to the last Ubuntu LTS release for non-Ubuntu systems
+release=xenial # Default to the last Ubuntu LTS release for non-Ubuntu systems
 if [ -f /etc/lsb-release ]; then
     . /etc/lsb-release
     if [ "$DISTRIB_ID" = "Ubuntu" ]; then

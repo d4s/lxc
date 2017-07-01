@@ -155,15 +155,15 @@ static void print_net_stats(struct lxc_container *c)
 	char buf[256];
 
 	for(netnr = 0; ;netnr++) {
-		sprintf(buf, "lxc.network.%d.type", netnr);
+		sprintf(buf, "lxc.net.%d.type", netnr);
 		type = c->get_running_config_item(c, buf);
 		if (!type)
 			break;
 
 		if (!strcmp(type, "veth")) {
-			sprintf(buf, "lxc.network.%d.veth.pair", netnr);
+			sprintf(buf, "lxc.net.%d.veth.pair", netnr);
 		} else {
-			sprintf(buf, "lxc.network.%d.link", netnr);
+			sprintf(buf, "lxc.net.%d.link", netnr);
 		}
 		free(type);
 		ifname = c->get_running_config_item(c, buf);
@@ -204,7 +204,7 @@ static void print_net_stats(struct lxc_container *c)
 static void print_stats(struct lxc_container *c)
 {
 	int i, ret;
-	char buf[256];
+	char buf[4096];
 
 	ret = c->get_cgroup_item(c, "cpuacct.usage", buf, sizeof(buf));
 	if (ret > 0 && ret < sizeof(buf)) {
@@ -394,6 +394,7 @@ static int print_info(const char *name, const char *lxcpath)
 int main(int argc, char *argv[])
 {
 	int ret = EXIT_FAILURE;
+	struct lxc_log log;
 
 	if (lxc_arguments_parse(&my_args, argc, argv))
 		exit(ret);
@@ -401,8 +402,14 @@ int main(int argc, char *argv[])
 	if (!my_args.log_file)
 		my_args.log_file = "none";
 
-	if (lxc_log_init(my_args.name, my_args.log_file, my_args.log_priority,
-			 my_args.progname, my_args.quiet, my_args.lxcpath[0]))
+	log.name = my_args.name;
+	log.file = my_args.log_file;
+	log.level = my_args.log_priority;
+	log.prefix = my_args.progname;
+	log.quiet = my_args.quiet;
+	log.lxcpath = my_args.lxcpath[0];
+
+	if (lxc_log_init(&log))
 		exit(ret);
 	lxc_log_options_no_override();
 

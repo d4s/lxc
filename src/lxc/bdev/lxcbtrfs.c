@@ -68,13 +68,13 @@ char *get_btrfs_subvol_path(int fd, u64 dir_id, u64 objid, char *name,
 	ret = ioctl(fd, BTRFS_IOC_INO_LOOKUP, &args);
 	e = errno;
 	if (ret) {
-		ERROR("%s: ERROR: Failed to lookup path for %llu %llu %s - %s\n",
-				 __func__, (unsigned long long) dir_id,
+		ERROR("Failed to lookup path for %llu %llu %s - %s\n",
+				 (unsigned long long) dir_id,
 				 (unsigned long long) objid,
 				 name, strerror(e));
 		return NULL;
 	} else
-		INFO("%s: got path for %llu %llu - %s\n", __func__,
+		INFO("Got path for %llu %llu - %s\n",
 			(unsigned long long) objid, (unsigned long long) dir_id,
 			name);
 
@@ -398,7 +398,8 @@ int btrfs_clonepaths(struct bdev *orig, struct bdev *new, const char *oldname,
 			return btrfs_snapshot(orig->dest, new->dest);
 		sdata.dest = new->dest;
 		sdata.src = orig->dest;
-		return userns_exec_1(conf, btrfs_snapshot_wrapper, &sdata);
+		return userns_exec_1(conf, btrfs_snapshot_wrapper, &sdata,
+				     "btrfs_snapshot_wrapper");
 	}
 
 	if (rmdir(new->dest) < 0 && errno != ENOENT) {

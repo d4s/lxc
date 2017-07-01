@@ -44,6 +44,7 @@
 #include "log.h"
 #include "caps.h"
 #include "utils.h"
+#include "lxccontainer.h"
 
 /* We're logging in seconds and nanoseconds. Assuming that the underlying
  * datatype is currently at maximum a 64bit integer, we have a date string that
@@ -66,23 +67,23 @@ lxc_log_define(lxc_log, lxc);
 static int lxc_log_priority_to_syslog(int priority)
 {
 	switch (priority) {
-	case LXC_LOG_PRIORITY_FATAL:
+	case LXC_LOG_LEVEL_FATAL:
 		return LOG_EMERG;
-	case LXC_LOG_PRIORITY_ALERT:
+	case LXC_LOG_LEVEL_ALERT:
 		return LOG_ALERT;
-	case LXC_LOG_PRIORITY_CRIT:
+	case LXC_LOG_LEVEL_CRIT:
 		return LOG_CRIT;
-	case LXC_LOG_PRIORITY_ERROR:
+	case LXC_LOG_LEVEL_ERROR:
 		return LOG_ERR;
-	case LXC_LOG_PRIORITY_WARN:
+	case LXC_LOG_LEVEL_WARN:
 		return LOG_WARNING;
-	case LXC_LOG_PRIORITY_NOTICE:
-	case LXC_LOG_PRIORITY_NOTSET:
+	case LXC_LOG_LEVEL_NOTICE:
+	case LXC_LOG_LEVEL_NOTSET:
 		return LOG_NOTICE;
-	case LXC_LOG_PRIORITY_INFO:
+	case LXC_LOG_LEVEL_INFO:
 		return LOG_INFO;
-	case LXC_LOG_PRIORITY_TRACE:
-	case LXC_LOG_PRIORITY_DEBUG:
+	case LXC_LOG_LEVEL_TRACE:
+	case LXC_LOG_LEVEL_DEBUG:
 		return LOG_DEBUG;
 	}
 
@@ -129,7 +130,7 @@ static int log_append_syslog(const struct lxc_log_appender *appender,
 static int log_append_stderr(const struct lxc_log_appender *appender,
 			     struct lxc_log_event *event)
 {
-	if (event->priority < LXC_LOG_PRIORITY_ERROR)
+	if (event->priority < LXC_LOG_LEVEL_ERROR)
 		return 0;
 
 	fprintf(stderr, "%s: %s%s", log_prefix, log_vmname ? log_vmname : "", log_vmname ? ": " : "");
@@ -324,14 +325,14 @@ static struct lxc_log_appender log_appender_logfile = {
 
 static struct lxc_log_category log_root = {
 	.name		= "root",
-	.priority	= LXC_LOG_PRIORITY_ERROR,
+	.priority	= LXC_LOG_LEVEL_ERROR,
 	.appender	= NULL,
 	.parent		= NULL,
 };
 
 struct lxc_log_category lxc_log_category_lxc = {
 	.name		= "lxc",
-	.priority	= LXC_LOG_PRIORITY_ERROR,
+	.priority	= LXC_LOG_LEVEL_ERROR,
 	.appender	= &log_appender_logfile,
 	.parent		= &log_root
 };
@@ -462,10 +463,10 @@ extern void lxc_log_close(void)
 /*
  * This can be called:
  *   1. when a program calls lxc_log_init with no logfile parameter (in which
- *      case the default is used).  In this case lxc.logfile can override this.
+ *      case the default is used).  In this case lxc.loge can override this.
  *   2. when a program calls lxc_log_init with a logfile parameter.  In this
- *	case we don't want lxc.logfile to override this.
- *   3. When a lxc.logfile entry is found in config file.
+ *	case we don't want lxc.log to override this.
+ *   3. When a lxc.log entry is found in config file.
  */
 static int __lxc_log_set_file(const char *fname, int create_dirs)
 {
@@ -543,11 +544,9 @@ extern void lxc_log_enable_syslog(void)
  * Called from lxc front-end programs (like lxc-create, lxc-start) to
  * initalize the log defaults.
  */
-extern int lxc_log_init(const char *name, const char *file,
-			const char *priority, const char *prefix, int quiet,
-			const char *lxcpath)
+extern int lxc_log_init(struct lxc_log *log)
 {
-	int lxc_priority = LXC_LOG_PRIORITY_ERROR;
+	int lxc_priority = LXC_LOG_LEVEL_ERROR;
 	int ret;
 
 	if (lxc_log_fd != -1) {
@@ -555,8 +554,8 @@ extern int lxc_log_init(const char *name, const char *file,
 		return 0;
 	}
 
-	if (priority)
-		lxc_priority = lxc_log_priority_to_int(priority);
+	if (log->level)
+		lxc_priority = lxc_log_priority_to_int(log->level);
 
 	if (!lxc_loglevel_specified) {
 		lxc_log_category_lxc.priority = lxc_priority;
@@ -564,49 +563,49 @@ extern int lxc_log_init(const char *name, const char *file,
 	}
 
 	if (!lxc_quiet_specified) {
-		if (!quiet)
+		if (!log->quiet)
 			lxc_log_category_lxc.appender->next = &log_appender_stderr;
 	}
 
-	if (prefix)
-		lxc_log_set_prefix(prefix);
+	if (log->prefix)
+		lxc_log_set_prefix(log->prefix);
 
-	if (name)
-		log_vmname = strdup(name);
+	if (log->name)
+		log_vmname = strdup(log->name);
 
-	if (file) {
-		if (strcmp(file, "none") == 0)
+	if (log->file) {
+		if (strcmp(log->file, "none") == 0)
 			return 0;
-		ret = __lxc_log_set_file(file, 1);
+		ret = __lxc_log_set_file(log->file, 1);
 		lxc_log_use_global_fd = 1;
 	} else {
 		/* if no name was specified, there nothing to do */
-		if (!name)
+		if (!log->name)
 			return 0;
 
 		ret = -1;
 
-		if (!lxcpath)
-			lxcpath = LOGPATH;
+		if (!log->lxcpath)
+			log->lxcpath = LOGPATH;
 
 		/* try LOGPATH if lxcpath is the default for the privileged containers */
-		if (!geteuid() && strcmp(LXCPATH, lxcpath) == 0)
-			ret = _lxc_log_set_file(name, NULL, 0);
+		if (!geteuid() && strcmp(LXCPATH, log->lxcpath) == 0)
+			ret = _lxc_log_set_file(log->name, NULL, 0);
 
 		/* try in lxcpath */
 		if (ret < 0)
-			ret = _lxc_log_set_file(name, lxcpath, 1);
+			ret = _lxc_log_set_file(log->name, log->lxcpath, 1);
 
 		/* try LOGPATH in case its writable by the caller */
 		if (ret < 0)
-			ret = _lxc_log_set_file(name, NULL, 0);
+			ret = _lxc_log_set_file(log->name, NULL, 0);
 	}
 
 	/*
 	 * If !file, that is, if the user did not request this logpath, then
 	 * ignore failures and continue logging to console
 	 */
-	if (!file && ret != 0) {
+	if (!log->file && ret != 0) {
 		INFO("Ignoring failure to open default logfile.");
 		ret = 0;
 	}
@@ -615,13 +614,13 @@ extern int lxc_log_init(const char *name, const char *file,
 }
 
 /*
- * This is called when we read a lxc.loglevel entry in a lxc.conf file.  This
+ * This is called when we read a lxc.log.level entry in a lxc.conf file.  This
  * happens after processing command line arguments, which override the .conf
  * settings.  So only set the level if previously unset.
  */
 extern int lxc_log_set_level(int *dest, int level)
 {
-	if (level < 0 || level >= LXC_LOG_PRIORITY_NOTSET) {
+	if (level < 0 || level >= LXC_LOG_LEVEL_NOTSET) {
 		ERROR("invalid log priority %d", level);
 		return -1;
 	}
@@ -637,7 +636,7 @@ extern int lxc_log_get_level(void)
 extern bool lxc_log_has_valid_level(void)
 {
 	int log_level = lxc_log_get_level();
-	if (log_level < 0 || log_level >= LXC_LOG_PRIORITY_NOTSET)
+	if (log_level < 0 || log_level >= LXC_LOG_LEVEL_NOTSET)
 		return false;
 	return true;
 }

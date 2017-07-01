@@ -43,7 +43,9 @@
 #include "commands.h"
 #include "console.h"
 #include "confile.h"
+#include "lxclock.h"
 #include "mainloop.h"
+#include "monitor.h"
 #include "af_unix.h"
 #include "config.h"
 
@@ -74,13 +76,18 @@
 
 lxc_log_define(lxc_commands, lxc);
 
-static int fill_sock_name(char *path, int len, const char *name,
+static int fill_sock_name(char *path, int len, const char *lxcname,
 			  const char *lxcpath, const char *hashed_sock_name)
 {
+	const char *name;
 	char *tmppath;
 	size_t tmplen;
 	uint64_t hash;
 	int ret;
+
+	name = lxcname;
+	if (!name)
+		name = "";
 
 	if (hashed_sock_name != NULL) {
 		ret = snprintf(path, len, "lxc/%s/command", hashed_sock_name);
@@ -137,6 +144,7 @@ static const char *lxc_cmd_str(lxc_cmd_t cmd)
 		[LXC_CMD_GET_CONFIG_ITEM] = "get_config_item",
 		[LXC_CMD_GET_NAME]        = "get_name",
 		[LXC_CMD_GET_LXCPATH]     = "get_lxcpath",
+		[LXC_CMD_STATE_SERVER]    = "state_server",
 	};
 
 	if (cmd >= LXC_CMD_MAX)
@@ -166,7 +174,7 @@ static int lxc_cmd_rsp_recv(int sock, struct lxc_cmd_rr *cmd)
 	int ret,rspfd;
 	struct lxc_cmd_rsp *rsp = &cmd->rsp;
 
-	ret = lxc_abstract_unix_recv_fd(sock, &rspfd, rsp, sizeof(*rsp));
+	ret = lxc_abstract_unix_recv_fds(sock, &rspfd, 1, rsp, sizeof(*rsp));
 	if (ret < 0) {
 		WARN("Command %s failed to receive response: %s.",
 		     lxc_cmd_str(cmd->req.cmd), strerror(errno));
@@ -193,8 +201,11 @@ static int lxc_cmd_rsp_recv(int sock, struct lxc_cmd_rr *cmd)
 		rsp->data = rspdata;
 	}
 
-	if (rsp->datalen == 0)
+	if (rsp->datalen == 0) {
+		DEBUG("command %s response data length is 0",
+		      lxc_cmd_str(cmd->req.cmd));
 		return ret;
+	}
 	if (rsp->datalen > LXC_CMD_DATA_MAX) {
 		ERROR("Command %s response data %d too long.",
 		      lxc_cmd_str(cmd->req.cmd), rsp->datalen);
@@ -274,8 +285,12 @@ static int lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, int *stopped,
 	int sock, ret = -1;
 	char path[sizeof(((struct sockaddr_un *)0)->sun_path)] = { 0 };
 	char *offset = &path[1];
-	int len;
-	int stay_connected = cmd->req.cmd == LXC_CMD_CONSOLE;
+	size_t len;
+	bool stay_connected = false;
+
+	if (cmd->req.cmd == LXC_CMD_CONSOLE ||
+	    cmd->req.cmd == LXC_CMD_STATE_SERVER)
+		stay_connected = true;
 
 	*stopped = 0;
 
@@ -289,12 +304,20 @@ static int lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, int *stopped,
 		return -1;
 
 	sock = lxc_abstract_unix_connect(path);
+	TRACE("command %s tries to connect to \"@%s\"",
+	      lxc_cmd_str(cmd->req.cmd), offset);
 	if (sock < 0) {
-		if (errno == ECONNREFUSED)
+		if (errno == ECONNREFUSED) {
+			TRACE("command %s failed to connect to \"@%s\": %s",
+			      lxc_cmd_str(cmd->req.cmd), offset,
+			      strerror(errno));
 			*stopped = 1;
-		else
-			SYSERROR("Command %s failed to connect to \"@%s\".",
-				 lxc_cmd_str(cmd->req.cmd), offset);
+		} else {
+			SYSERROR("command %s failed to connect to \"@%s\": %s",
+				 lxc_cmd_str(cmd->req.cmd), offset,
+				 strerror(errno));
+		}
+
 		return -1;
 	}
 
@@ -454,19 +477,25 @@ char *lxc_cmd_get_cgroup_path(const char *name, const char *lxcpath,
 	};
 
 	ret = lxc_cmd(name, &cmd, &stopped, lxcpath, NULL);
-	if (ret < 0)
+	if (ret < 0) {
+		TRACE("command %s failed for container \"%s\": %s.",
+		      lxc_cmd_str(cmd.req.cmd), name, strerror(errno));
 		return NULL;
+	}
 
 	if (!ret) {
-		WARN("Container \"%s\" has stopped before sending its state.", name);
+		WARN("container \"%s\" has stopped before sending its state", name);
 		return NULL;
 	}
 
 	if (cmd.rsp.ret < 0 || cmd.rsp.datalen < 0) {
-		ERROR("Command %s failed for container \"%s\": %s.",
+		ERROR("command %s failed for container \"%s\": %s",
 		      lxc_cmd_str(cmd.req.cmd), name, strerror(-cmd.rsp.ret));
 		return NULL;
 	}
+
+	TRACE("command %s successful for container \"%s\"",
+	      lxc_cmd_str(cmd.req.cmd), name);
 
 	return cmd.rsp.data;
 }
@@ -494,7 +523,7 @@ static int lxc_cmd_get_cgroup_callback(int fd, struct lxc_cmd_req *req,
  * lxc_cmd_get_config_item: Get config item the running container
  *
  * @name     : name of container to connect to
- * @item     : the configuration item to retrieve (ex: lxc.network.0.veth.pair)
+ * @item     : the configuration item to retrieve (ex: lxc.net.0.veth.pair)
  * @lxcpath  : the lxcpath in which the container is running
  *
  * Returns the item on success, NULL on failure. The caller must free() the
@@ -526,14 +555,18 @@ static int lxc_cmd_get_config_item_callback(int fd, struct lxc_cmd_req *req,
 	int cilen;
 	struct lxc_cmd_rsp rsp;
 	char *cidata;
+	struct lxc_config_t *item;
 
 	memset(&rsp, 0, sizeof(rsp));
-	cilen = lxc_get_config_item(handler->conf, req->data, NULL, 0);
+	item = lxc_getconfig(req->data);
+	if (!item)
+		goto err1;
+	cilen = item->get(req->data, NULL, 0, handler->conf, NULL);
 	if (cilen <= 0)
 		goto err1;
 
 	cidata = alloca(cilen + 1);
-	if (lxc_get_config_item(handler->conf, req->data, cidata, cilen + 1) != cilen)
+	if (item->get(req->data, cidata, cilen + 1, handler->conf, NULL) != cilen)
 		goto err1;
 	cidata[cilen] = '\0';
 	rsp.data = cidata;
@@ -555,7 +588,7 @@ out:
  *
  * Returns the state on success, < 0 on failure
  */
-lxc_state_t lxc_cmd_get_state(const char *name, const char *lxcpath)
+int lxc_cmd_get_state(const char *name, const char *lxcpath)
 {
 	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
@@ -744,7 +777,7 @@ static int lxc_cmd_console_callback(int fd, struct lxc_cmd_req *req,
 
 	memset(&rsp, 0, sizeof(rsp));
 	rsp.data = INT_TO_PTR(ttynum);
-	if (lxc_abstract_unix_send_fd(fd, masterfd, &rsp, sizeof(rsp)) < 0) {
+	if (lxc_abstract_unix_send_fds(fd, &masterfd, 1, &rsp, sizeof(rsp)) < 0) {
 		ERROR("Failed to send tty to client.");
 		lxc_console_free(handler->conf, fd);
 		goto out_close;
@@ -835,6 +868,145 @@ static int lxc_cmd_get_lxcpath_callback(int fd, struct lxc_cmd_req *req,
 	return lxc_cmd_rsp_send(fd, &rsp);
 }
 
+/*
+ * lxc_cmd_state_server: register a client fd in the handler list
+ *
+ * @name      : name of container to connect to
+ * @lxcpath   : the lxcpath in which the container is running
+ *
+ * Returns the lxcpath on success, NULL on failure.
+ */
+int lxc_cmd_state_server(const char *name, const char *lxcpath,
+			 lxc_state_t states[MAX_STATE])
+{
+	int stopped;
+	ssize_t ret;
+	int state = -1;
+	struct lxc_msg msg = {0};
+	struct lxc_cmd_rr cmd = {
+	    .req = {
+		.cmd     = LXC_CMD_STATE_SERVER,
+		.data    = states,
+		.datalen = (sizeof(lxc_state_t) * MAX_STATE)
+	    },
+	};
+
+	/* Lock the whole lxc_cmd_state_server_callback() call to ensure that
+	 * lxc_set_state() doesn't cause us to miss a state.
+	 */
+	process_lock();
+	/* Check if already in requested state. */
+	state = lxc_getstate(name, lxcpath);
+	if (state < 0) {
+		process_unlock();
+		TRACE("failed to retrieve state of container: %s",
+		      strerror(errno));
+		return -1;
+	} else if (states[state]) {
+		process_unlock();
+		TRACE("container is %s state", lxc_state2str(state));
+		return state;
+	}
+
+	if ((state == STARTING) && !states[RUNNING] && !states[STOPPING] && !states[STOPPED]) {
+		process_unlock();
+		TRACE("container is in %s state and caller requested to be "
+		      "informed about a previous state",
+		      lxc_state2str(state));
+		return state;
+	} else if ((state == RUNNING) && !states[STOPPING] && !states[STOPPED]) {
+		process_unlock();
+		TRACE("container is in %s state and caller requested to be "
+		      "informed about a previous state",
+		      lxc_state2str(state));
+		return state;
+	} else if ((state == STOPPING) && !states[STOPPED]) {
+		process_unlock();
+		TRACE("container is in %s state and caller requested to be "
+		      "informed about a previous state",
+		      lxc_state2str(state));
+		return state;
+	} else if ((state == STOPPED) || (state == ABORTING)) {
+		process_unlock();
+		TRACE("container is in %s state and caller requested to be "
+		      "informed about a previous state",
+		      lxc_state2str(state));
+		return state;
+	}
+
+	ret = lxc_cmd(name, &cmd, &stopped, lxcpath, NULL);
+	process_unlock();
+	if (ret < 0) {
+		ERROR("failed to execute command: %s", strerror(errno));
+		return -1;
+	}
+	/* We should now be guaranteed to get an answer from the state sending
+	 * function.
+	 */
+
+	if (cmd.rsp.ret < 0) {
+		ERROR("failed to receive socket fd");
+		return -1;
+	}
+
+again:
+	ret = recv(cmd.rsp.ret, &msg, sizeof(msg), 0);
+	if (ret < 0) {
+		if (errno == EINTR)
+			goto again;
+
+		ERROR("failed to receive message: %s", strerror(errno));
+		return -1;
+	}
+	if (ret == 0) {
+		ERROR("length of message was 0");
+		return -1;
+	}
+
+	TRACE("received state %s from state client %d",
+	      lxc_state2str(msg.value), cmd.rsp.ret);
+	return msg.value;
+}
+
+static int lxc_cmd_state_server_callback(int fd, struct lxc_cmd_req *req,
+					 struct lxc_handler *handler)
+{
+	struct lxc_cmd_rsp rsp = {0};
+	struct state_client *newclient;
+	struct lxc_list *tmplist;
+
+	if (req->datalen < 0) {
+		TRACE("requested datalen was < 0");
+		return -1;
+	}
+
+	if (!req->data) {
+		TRACE("no states requested");
+		return -1;
+	}
+
+	newclient = malloc(sizeof(*newclient));
+	if (!newclient)
+		return -1;
+
+	/* copy requested states */
+	memcpy(newclient->states, req->data, sizeof(newclient->states));
+	newclient->clientfd = fd;
+
+	tmplist = malloc(sizeof(*tmplist));
+	if (!tmplist) {
+		free(newclient);
+		return -1;
+	}
+
+	lxc_list_add_elem(tmplist, newclient);
+	lxc_list_add_tail(&handler->state_clients, tmplist);
+
+	TRACE("added state client %d to state client list", fd);
+
+	return lxc_cmd_rsp_send(fd, &rsp);
+}
+
 static int lxc_cmd_process(int fd, struct lxc_cmd_req *req,
 			   struct lxc_handler *handler)
 {
@@ -851,6 +1023,7 @@ static int lxc_cmd_process(int fd, struct lxc_cmd_req *req,
 		[LXC_CMD_GET_CONFIG_ITEM] = lxc_cmd_get_config_item_callback,
 		[LXC_CMD_GET_NAME]        = lxc_cmd_get_name_callback,
 		[LXC_CMD_GET_LXCPATH]     = lxc_cmd_get_lxcpath_callback,
+		[LXC_CMD_STATE_SERVER]    = lxc_cmd_state_server_callback,
 	};
 
 	if (req->cmd >= LXC_CMD_MAX) {
@@ -982,7 +1155,7 @@ int lxc_cmd_init(const char *name, struct lxc_handler *handler,
 	 * Although null termination isn't required by the API, we do it anyway
 	 * because we print the sockname out sometimes.
 	 */
-	len = sizeof(path)-2;
+	len = sizeof(path) - 2;
 	if (fill_sock_name(offset, len, name, lxcpath, NULL))
 		return -1;
 
