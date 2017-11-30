@@ -3,6 +3,7 @@ templatesdir=@LXCTEMPLATEDIR@
 templates_SCRIPTS = \
 	lxc-alpine \
 	lxc-altlinux \
+	lxc-apertis \
 	lxc-archlinux \
 	lxc-busybox \
 	lxc-centos \
