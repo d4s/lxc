@@ -1,0 +1,176 @@
+#!/bin/sh
+
+# Template for Apertis OStree-based container images.
+#
+# Copyright © 2017 Collabora Ltd.
+
+set -ue
+
+# Apertis options
+LONGOPTS="arch:,board:,type:,release:,ostreeurl:,repo:,branch:"
+SHORTOPTS="a:b:T:u:r:b"
+
+#LXC internal options
+LONGOPTS="$LONGOPTS,name:,path:,rootfs:,mapped-uid:,mapped-gid:"
+OPTS=$(getopt -o $SHORTOPTS -l $LONGOPTS -- "$@")
+
+eval set -- "$OPTS"
+
+# Defaults
+ARCH="amd64"
+BOARD="generic"
+TYPE="minimal"
+RELEASE="17.12"
+OSTREEURL="https://images.apertis.org/ostree/$ARCH-$BOARD-$TYPE"
+BRANCH="apertis/$ARCH-$BOARD/$TYPE"
+
+LXC_NAME=
+LXC_PATH=
+LXC_ROOTFS=
+LXC_MAPPED_UID=
+LXC_MAPPED_GID=
+
+# Check if all needed binaries are available
+BINARIES="ostree"
+rc=0
+for f in $BINARIES; do
+    which $f 1>/dev/null 2>&1 && continue || :
+    echo "$f is required"
+    rc=1
+done
+[ $rc -eq 0 ] || exit 1
+
+# Check options
+while true; do
+    case "$1" in
+        -a|--arch)      ARCH="$2"; shift 2;;
+        -b|--board)     BOARD="$2"; shift 2;;
+        -T|--type)      TYPE="$2"; shift 2;;
+        -u|--url)       OSTREEURL="$2"; shift 2;;
+        -b|--branch)    BRANCH="$2"; shift 2;;
+        --release)      RELEASE="$2"; shift 2;;
+        --name)         LXC_NAME="$2"; shift 2;;
+        --path)         LXC_PATH="$2"; shift 2;;
+        --rootfs)       LXC_ROOTFS="$2"; shift 2;;
+        --mapped-uid)   LXC_MAPPED_UID="$2"; shift 2;;
+        --mapped-gid)   LXC_MAPPED_GID="$2"; shift 2;;
+        *)              break;;
+    esac
+done
+
+#################### Rootfs generation from OStree #################
+# Initialize filesystem
+ostree admin init-fs "$LXC_ROOTFS"
+
+# Initialize Apertis OS
+ostree admin os-init --sysroot="$LXC_ROOTFS" apertis
+
+# Add remote mirror with OS
+ostree --repo="$LXC_ROOTFS"/ostree/repo remote add origin "$OSTREEURL" "$BRANCH" --no-gpg-verify
+
+# Download the latest version
+ostree --repo="$LXC_ROOTFS"/ostree/repo pull origin "$BRANCH"
+
+# Deploy FS
+ostree admin deploy --sysroot="$LXC_ROOTFS" --os=apertis "$BRANCH"
+
+#################### Temporary hacks ###############################
+#TODO: rework after correct adaptation of Apertis for OStree-based boot
+# Get ID of current root
+ID=$(ostree admin status --sysroot="$LXC_ROOTFS" | head -n1 | cut -d ' ' -f 4)
+[ -z "$ID" ] && exit 1
+# TODO: remove this and use correct ostree way
+rsync -a "$LXC_ROOTFS"/ostree/deploy/apertis/deploy/"$ID"/ "$LXC_ROOTFS"/ 2>/dev/null || :
+
+# Clean immutable bit to allow destroy container
+chattr -i "$LXC_ROOTFS"/ostree/deploy/apertis/deploy/"$ID"
+
+# Fix dpkg
+mkdir -p "$LXC_ROOTFS"/var/lib/dpkg/{info,updates,alternatives}
+touch "$LXC_ROOTFS"/var/lib/dpkg/status
+
+#################### Config generation #############################
+# Apertis specific configuration
+# NB: Rootfs is added by lxc-create
+cat <<E_O_F >> "$LXC_PATH"/config
+lxc.uts.name = $LXC_NAME
+
+# Include default LXC configuration
+lxc.include = /usr/share/lxc/config/common.conf
+
+lxc.pty.max = 1024
+
+lxc.mount.auto = proc:mixed sys:ro cgroup:mixed
+
+lxc.mount.entry = tmpfs /dev/shm tmpfs  defaults 0 0
+lxc.mount.entry = proc dev/.lxc/proc proc create=dir,optional 0 0
+lxc.mount.entry = sys dev/.lxc/sys sysfs create=dir,optional 0 0
+lxc.mount.entry = /sys/kernel/security sys/kernel/security none bind,optional 0 0
+E_O_F
+
+# Setup networking in case if default config does not provide it
+if ! grep -q "^lxc.net.0.type" "$LXC_PATH"/config; then
+    cat <<E_O_F >> "$LXC_PATH"/config
+lxc.net.0.type = veth
+lxc.net.0.name = eth0
+lxc.net.0.link = lxcbr0
+lxc.net.0.flags = up
+lxc.net.0.ipv4.address = 10.0.3.138/24
+E_O_F
+fi
+
+#################### Additional configuration ######################
+# home directory should be under /sysroot
+mkdir -p $LXC_ROOTFS/sysroot/home
+
+# Prevent Ribchester from using /run/ribchester/general as that's not treated specially in a container
+mkdir -p $LXC_ROOTFS/var/lib/ribchester
+
+mkdir -p $LXC_ROOTFS/etc/systemd/system/apparmor.service.d/
+cat >$LXC_ROOTFS/etc/systemd/system/apparmor.service.d/10-enable-in-container.conf <<'EOF'
+[Unit]
+# Enable nested AppArmor when running in a container
+ConditionVirtualization=
+EOF
+
+mkdir -p $LXC_ROOTFS/etc/systemd/system/apparmor-regen-cache.service.d/
+cat >$LXC_ROOTFS/etc/systemd/system/apparmor-regen-cache.service.d/10-enable-in-container.conf <<'EOF'
+[Unit]
+# Enable nested AppArmor when running in a container
+ConditionVirtualization=
+EOF
+
+mkdir -p $LXC_ROOTFS/etc/systemd/system/systemd-hostnamed.service.d/
+cat >$LXC_ROOTFS/etc/systemd/system/systemd-hostnamed.service.d/10-workaround-private-network.conf <<'EOF'
+[Service]
+# Workaround hostnamed failing to start since setting up private networking in a container fails
+PrivateNetwork=no
+EOF
+
+mkdir -p $LXC_ROOTFS/etc/systemd/system/etc-rw.service.d/
+cat >$LXC_ROOTFS/etc/systemd/system/etc-rw.service.d/10-disable-in-container.conf <<EOF
+[Unit]
+# Disable special /etc mount settings when running in a container
+ConditionVirtualization=!container
+EOF
+
+mkdir -p $LXC_ROOTFS/etc/systemd/system/var-rw.service.d/
+cat >$LXC_ROOTFS/etc/systemd/system/var-rw.service.d/10-disable-in-container.conf <<EOF
+[Unit]
+# Disable special /var mount settings when running in a container
+ConditionVirtualization=!container
+EOF
+
+mkdir -p $LXC_ROOTFS/etc/systemd/system/ribchester-core.service.d/
+cat >$LXC_ROOTFS/etc/systemd/system/ribchester-core.service.d/10-debug.conf <<EOF
+[Service]
+# Enable debugging on the ribchester daemon, `journalctl -u ribchester-core` to check the logs
+Environment=G_MESSAGES_DEBUG=all
+EOF
+
+# Enable the development repository for utilities such as gnome-desktop-testing
+mkdir -p $LXC_ROOTFS/etc/apt/sources.list.d
+cat >$LXC_ROOTFS/etc/apt/sources.list.d/development.list <<EOF
+deb https://repositories.apertis.org/apertis/ $RELEASE development
+deb-src https://repositories.apertis.org/apertis/ $RELEASE development
+EOF
