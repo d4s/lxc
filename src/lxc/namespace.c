@@ -21,17 +21,18 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include <unistd.h>
 #include <alloca.h>
 #include <errno.h>
-#include <signal.h>
-#include <sys/param.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
-#include "namespace.h"
 #include "log.h"
+#include "namespace.h"
+#include "utils.h"
 
 lxc_log_define(lxc_namespace, lxc);
 
@@ -53,7 +54,7 @@ pid_t lxc_clone(int (*fn)(void *), void *arg, int flags)
 		.arg = arg,
 	};
 
-	size_t stack_size = sysconf(_SC_PAGESIZE);
+	size_t stack_size = lxc_getpagesize();
 	void *stack = alloca(stack_size);
 	pid_t ret;
 
@@ -95,15 +96,26 @@ const struct ns_info ns_info[LXC_NS_MAX] = {
 	[LXC_NS_CGROUP] = {"cgroup", CLONE_NEWCGROUP, "CLONE_NEWCGROUP"}
 };
 
-int lxc_namespace_2_cloneflag(char *namespace)
+int lxc_namespace_2_cloneflag(const char *namespace)
 {
 	int i;
 	for (i = 0; i < LXC_NS_MAX; i++)
 		if (!strcasecmp(ns_info[i].proc_name, namespace))
 			return ns_info[i].clone_flag;
 
-	ERROR("Invalid namespace name: %s.", namespace);
-	return -1;
+	ERROR("Invalid namespace name \"%s\"", namespace);
+	return -EINVAL;
+}
+
+int lxc_namespace_2_ns_idx(const char *namespace)
+{
+	int i;
+	for (i = 0; i < LXC_NS_MAX; i++)
+		if (!strcmp(ns_info[i].proc_name, namespace))
+			return i;
+
+	ERROR("Invalid namespace name \"%s\"", namespace);
+	return -EINVAL;
 }
 
 int lxc_fill_namespace_flags(char *flaglist, int *flags)

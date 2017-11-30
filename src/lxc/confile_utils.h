@@ -77,12 +77,16 @@ extern int set_config_string_item_max(char **conf_item, const char *value,
 				      size_t max);
 extern int set_config_path_item(char **conf_item, const char *value);
 extern int config_ip_prefix(struct in_addr *addr);
-extern int network_ifname(char **valuep, const char *value);
+extern int network_ifname(char *valuep, const char *value);
 extern int rand_complete_hwaddr(char *hwaddr);
 extern bool lxc_config_net_hwaddr(const char *line);
 extern void update_hwaddr(const char *line);
 extern bool new_hwaddr(char *hwaddr);
 extern int lxc_get_conf_str(char *retv, int inlen, const char *value);
 extern int lxc_get_conf_int(struct lxc_conf *c, char *retv, int inlen, int v);
-extern bool parse_limit_value(const char **value, unsigned long *res);
+extern int lxc_get_conf_uint64(struct lxc_conf *c, char *retv, int inlen, uint64_t v);
+extern bool parse_limit_value(const char **value, rlim_t *res);
+extern int lxc_inherit_namespace(const char *lxcname_or_pid,
+				 const char *lxcpath, const char *namespace);
+
 #endif /* __LXC_CONFILE_UTILS_H */

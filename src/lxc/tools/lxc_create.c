@@ -27,12 +27,11 @@
 #include <sys/types.h>
 
 #include "arguments.h"
-#include "bdev.h"
 #include "log.h"
 #include "lxc.h"
+#include "storage.h"
+#include "storage_utils.h"
 #include "utils.h"
-
-lxc_log_define(lxc_create_ui, lxc);
 
 static uint64_t get_fssize(char *s)
 {
@@ -48,7 +47,7 @@ static uint64_t get_fssize(char *s)
 	while (isblank(*end))
 		end++;
 	if (*end == '\0')
-		ret *= 1024ULL * 1024ULL; // MB by default
+		ret *= 1024ULL * 1024ULL; /* MB by default */
 	else if (*end == 'b' || *end == 'B')
 		ret *= 1ULL;
 	else if (*end == 'k' || *end == 'K')
@@ -123,7 +122,7 @@ static void create_helpfn(const struct lxc_arguments *args)
 	argv[2] = NULL;
 
 	execv(path, argv);
-	ERROR("Error executing %s -h", path);
+	fprintf(stderr, "Error executing %s -h\n", path);
 	exit(EXIT_FAILURE);
 }
 
@@ -162,7 +161,7 @@ Options :\n\
 \n\
   BDEV options for LVM or Loop (with -B/--bdev lvm/loop) :\n\
       --fstype=TYPE             Create fstype TYPE\n\
-                                (Default: ext3)\n\
+                                (Default: ext4)\n\
       --fssize=SIZE[U]          Create filesystem of\n\
                                 size SIZE * unit U (bBkKmMgGtT)\n\
                                 (Default: 1G, default unit: M)\n",
@@ -228,6 +227,9 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	lxc_log_options_no_override();
 
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
+
 	if (!my_args.template) {
 		fprintf(stderr, "A template must be specified.\n");
 		fprintf(stderr, "Use \"none\" if you really want a container without a rootfs.\n");
@@ -247,10 +249,10 @@ int main(int argc, char *argv[])
 	if (strcmp(my_args.bdevtype, "none") == 0)
 		my_args.bdevtype = "dir";
 
-	// Final check whether the user gave use a valid bdev type.
+	/* Final check whether the user gave use a valid bdev type. */
 	if (strcmp(my_args.bdevtype, "best") &&
 	    strcmp(my_args.bdevtype, "_unset") &&
-	    !is_valid_bdev_type(my_args.bdevtype)) {
+	    !is_valid_storage_type(my_args.bdevtype)) {
 		fprintf(stderr, "%s is not a valid backing storage type.\n", my_args.bdevtype);
 		exit(EXIT_FAILURE);
 	}
@@ -322,12 +324,11 @@ int main(int argc, char *argv[])
 		flags = LXC_CREATE_QUIET;
 
 	if (!c->create(c, my_args.template, my_args.bdevtype, &spec, flags, &argv[optind])) {
-		ERROR("Error creating container %s", c->name);
+		fprintf(stderr, "Error creating container %s\n", c->name);
 		lxc_container_put(c);
 		exit(EXIT_FAILURE);
 	}
 
 	lxc_container_put(c);
-	INFO("container %s created", c->name);
 	exit(EXIT_SUCCESS);
 }

@@ -23,11 +23,13 @@
 
 #include "config.h"
 
+#define __STDC_FORMAT_MACROS /* Required for PRIu64 to work. */
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <inttypes.h>
 #include <libgen.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -40,38 +42,13 @@
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/vfs.h>
 #include <sys/wait.h>
 
 #include "log.h"
 #include "lxclock.h"
 #include "namespace.h"
+#include "parse.h"
 #include "utils.h"
-
-#ifndef PR_SET_MM
-#define PR_SET_MM 35
-#endif
-
-#ifndef PR_SET_MM_MAP
-#define PR_SET_MM_MAP 14
-
-struct prctl_mm_map {
-        uint64_t   start_code;
-        uint64_t   end_code;
-        uint64_t   start_data;
-        uint64_t   end_data;
-        uint64_t   start_brk;
-        uint64_t   brk;
-        uint64_t   start_stack;
-        uint64_t   arg_start;
-        uint64_t   arg_end;
-        uint64_t   env_start;
-        uint64_t   env_end;
-        uint64_t   *auxv;
-        uint32_t   auxv_size;
-        uint32_t   exe_fd;
-};
-#endif
 
 #ifndef O_PATH
 #define O_PATH      010000000
@@ -181,22 +158,24 @@ static int _recursive_rmdir(char *dirname, dev_t pdev,
 	return failed ? -1 : 0;
 }
 
-/* we have two different magic values for overlayfs, yay */
+/* We have two different magic values for overlayfs, yay. */
+#ifndef OVERLAYFS_SUPER_MAGIC
 #define OVERLAYFS_SUPER_MAGIC 0x794c764f
+#endif
+
+#ifndef OVERLAY_SUPER_MAGIC
 #define OVERLAY_SUPER_MAGIC 0x794c7630
-/*
- * In overlayfs, st_dev is unreliable.  so on overlayfs we don't do
- * the lxc_rmdir_onedev()
+#endif
+
+/* In overlayfs, st_dev is unreliable. So on overlayfs we don't do the
+ * lxc_rmdir_onedev()
  */
 static bool is_native_overlayfs(const char *path)
 {
-	struct statfs sb;
-
-	if (statfs(path, &sb) < 0)
-		return false;
-	if (sb.f_type == OVERLAYFS_SUPER_MAGIC ||
-			sb.f_type == OVERLAY_SUPER_MAGIC)
+	if (has_fs_type(path, OVERLAY_SUPER_MAGIC) ||
+	    has_fs_type(path, OVERLAYFS_SUPER_MAGIC))
 		return true;
+
 	return false;
 }
 
@@ -467,134 +446,105 @@ const char** lxc_va_arg_list_to_argv_const(va_list ap, size_t skip)
 	return (const char**)lxc_va_arg_list_to_argv(ap, skip, 0);
 }
 
-extern struct lxc_popen_FILE *lxc_popen(const char *command)
+struct lxc_popen_FILE *lxc_popen(const char *command)
 {
-	struct lxc_popen_FILE *fp = NULL;
-	int parent_end = -1, child_end = -1;
+	int ret;
 	int pipe_fds[2];
 	pid_t child_pid;
+	struct lxc_popen_FILE *fp = NULL;
 
-	int r = pipe2(pipe_fds, O_CLOEXEC);
-
-	if (r < 0) {
-		ERROR("pipe2 failure");
+	ret = pipe2(pipe_fds, O_CLOEXEC);
+	if (ret < 0)
 		return NULL;
-	}
-
-	parent_end = pipe_fds[0];
-	child_end = pipe_fds[1];
 
 	child_pid = fork();
+	if (child_pid < 0)
+		goto on_error;
 
-	if (child_pid == 0) {
-		/* child */
-		int child_std_end = STDOUT_FILENO;
+	if (!child_pid) {
+		sigset_t mask;
 
-		if (child_end != child_std_end) {
-			/* dup2() doesn't dup close-on-exec flag */
-			dup2(child_end, child_std_end);
+		close(pipe_fds[0]);
 
-			/* it's safe not to close child_end here
-			 * as it's marked close-on-exec anyway
-			 */
-		} else {
-			/*
-			 * The descriptor is already the one we will use.
-			 * But it must not be marked close-on-exec.
-			 * Undo the effects.
-			 */
-			if (fcntl(child_end, F_SETFD, 0) != 0) {
-				SYSERROR("Failed to remove FD_CLOEXEC from fd.");
-				exit(127);
-			}
+		/* duplicate stdout */
+		if (pipe_fds[1] != STDOUT_FILENO)
+			ret = dup2(pipe_fds[1], STDOUT_FILENO);
+		else
+			ret = fcntl(pipe_fds[1], F_SETFD, 0);
+		if (ret < 0) {
+			close(pipe_fds[1]);
+			exit(EXIT_FAILURE);
 		}
 
-		/*
-		 * Unblock signals.
-		 * This is the main/only reason
-		 * why we do our lousy popen() emulation.
-		 */
-		{
-			sigset_t mask;
-			sigfillset(&mask);
-			sigprocmask(SIG_UNBLOCK, &mask, NULL);
-		}
+		/* duplicate stderr */
+		if (pipe_fds[1] != STDERR_FILENO)
+			ret = dup2(pipe_fds[1], STDERR_FILENO);
+		else
+			ret = fcntl(pipe_fds[1], F_SETFD, 0);
+		close(pipe_fds[1]);
+		if (ret < 0)
+			exit(EXIT_FAILURE);
 
-		execl("/bin/sh", "sh", "-c", command, (char *) NULL);
+		/* unblock all signals */
+		ret = sigfillset(&mask);
+		if (ret < 0)
+			exit(EXIT_FAILURE);
+
+		ret = sigprocmask(SIG_UNBLOCK, &mask, NULL);
+		if (ret < 0)
+			exit(EXIT_FAILURE);
+
+		execl("/bin/sh", "sh", "-c", command, (char *)NULL);
 		exit(127);
 	}
 
-	/* parent */
+	close(pipe_fds[1]);
+	pipe_fds[1] = -1;
 
-	close(child_end);
-	child_end = -1;
-
-	if (child_pid < 0) {
-		ERROR("fork failure");
-		goto error;
-	}
-
-	fp = calloc(1, sizeof(*fp));
-	if (!fp) {
-		ERROR("failed to allocate memory");
-		goto error;
-	}
-
-	fp->f = fdopen(parent_end, "r");
-	if (!fp->f) {
-		ERROR("fdopen failure");
-		goto error;
-	}
+	fp = malloc(sizeof(*fp));
+	if (!fp)
+		goto on_error;
 
 	fp->child_pid = child_pid;
+	fp->pipe = pipe_fds[0];
+
+	fp->f = fdopen(pipe_fds[0], "r");
+	if (!fp->f)
+		goto on_error;
 
 	return fp;
 
-error:
-
-	if (fp) {
-		if (fp->f) {
-			fclose(fp->f);
-			parent_end = -1; /* so we do not close it second time */
-		}
-
+on_error:
+	if (fp)
 		free(fp);
-	}
 
-	if (parent_end != -1)
-		close(parent_end);
+	if (pipe_fds[0] >= 0)
+		close(pipe_fds[0]);
+
+	if (pipe_fds[1] >= 0)
+		close(pipe_fds[1]);
 
 	return NULL;
 }
 
-extern int lxc_pclose(struct lxc_popen_FILE *fp)
+int lxc_pclose(struct lxc_popen_FILE *fp)
 {
-	FILE *f = NULL;
-	pid_t child_pid = 0;
-	int wstatus = 0;
 	pid_t wait_pid;
+	int wstatus = 0;
 
-	if (fp) {
-		f = fp->f;
-		child_pid = fp->child_pid;
-		/* free memory (we still need to close file stream) */
-		free(fp);
-		fp = NULL;
-	}
-
-	if (!f || fclose(f)) {
-		ERROR("fclose failure");
+	if (!fp)
 		return -1;
-	}
 
 	do {
-		wait_pid = waitpid(child_pid, &wstatus, 0);
-	} while (wait_pid == -1 && errno == EINTR);
+		wait_pid = waitpid(fp->child_pid, &wstatus, 0);
+	} while (wait_pid < 0 && errno == EINTR);
 
-	if (wait_pid == -1) {
-		ERROR("waitpid failure");
+	close(fp->pipe);
+	fclose(fp->f);
+	free(fp);
+
+	if (wait_pid < 0)
 		return -1;
-	}
 
 	return wstatus;
 }
@@ -723,47 +673,46 @@ char **lxc_normalize_path(const char *path)
 	return components;
 }
 
-bool lxc_deslashify(char **path)
+char *lxc_deslashify(const char *path)
 {
-	bool ret = false;
-	char *p;
+	char *dup, *p;
 	char **parts = NULL;
 	size_t n, len;
 
-	parts = lxc_normalize_path(*path);
-	if (!parts)
-		return false;
+	dup = strdup(path);
+	if (!dup)
+		return NULL;
+
+	parts = lxc_normalize_path(dup);
+	if (!parts) {
+		free(dup);
+		return NULL;
+	}
 
 	/* We'll end up here if path == "///" or path == "". */
 	if (!*parts) {
-		len = strlen(*path);
+		len = strlen(dup);
 		if (!len) {
-			ret = true;
-			goto out;
+			lxc_free_array((void **)parts, free);
+			return dup;
 		}
-		n = strcspn(*path, "/");
+		n = strcspn(dup, "/");
 		if (n == len) {
+			free(dup);
+			lxc_free_array((void **)parts, free);
+
 			p = strdup("/");
 			if (!p)
-				goto out;
-			free(*path);
-			*path = p;
-			ret = true;
-			goto out;
+				return NULL;
+
+			return p;
 		}
 	}
 
-	p = lxc_string_join("/", (const char **)parts, **path == '/');
-	if (!p)
-		goto out;
-
-	free(*path);
-	*path = p;
-	ret = true;
-
-out:
+	p = lxc_string_join("/", (const char **)parts, *dup == '/');
+	free(dup);
 	lxc_free_array((void **)parts, free);
-	return ret;
+	return p;
 }
 
 char *lxc_append_paths(const char *first, const char *second)
@@ -841,6 +790,74 @@ error_out:
 	lxc_free_array((void **)result, free);
 	errno = saved_errno;
 	return NULL;
+}
+
+static bool complete_word(char ***result, char *start, char *end, size_t *cap, size_t *cnt)
+{
+	int r;
+
+	r = lxc_grow_array((void ***)result, cap, 2 + *cnt, 16);
+	if (r < 0)
+		return false;
+	(*result)[*cnt] = strndup(start, end - start);
+	if (!(*result)[*cnt])
+		return false;
+	(*cnt)++;
+
+	return true;
+}
+
+/*
+ * Given a a string 'one two "three four"', split into three words,
+ * one, two, and "three four"
+ */
+char **lxc_string_split_quoted(char *string)
+{
+	char *nextword = string, *p, state;
+	char **result = NULL;
+	size_t result_capacity = 0;
+	size_t result_count = 0;
+
+	if (!string || !*string)
+		return calloc(1, sizeof(char *));
+
+	// TODO I'm *not* handling escaped quote
+	state = ' ';
+	for (p = string; *p; p++) {
+		switch(state) {
+		case ' ':
+			if (isspace(*p))
+				continue;
+			else if (*p == '"' || *p == '\'') {
+				nextword = p;
+				state = *p;
+				continue;
+			}
+			nextword = p;
+			state = 'a';
+			continue;
+		case 'a':
+			if (isspace(*p)) {
+				complete_word(&result, nextword, p, &result_capacity, &result_count);
+				state = ' ';
+				continue;
+			}
+			continue;
+		case '"':
+		case '\'':
+			if (*p == state) {
+				complete_word(&result, nextword+1, p, &result_capacity, &result_count);
+				state = ' ';
+				continue;
+			}
+			continue;
+		}
+	}
+
+	if (state == 'a')
+		complete_word(&result, nextword, p, &result_capacity, &result_count);
+
+	return realloc(result, (result_count + 1) * sizeof(char *));
 }
 
 char **lxc_string_split_and_trim(const char *string, char _sep)
@@ -1064,7 +1081,7 @@ bool dir_exists(const char *path)
 
 	ret = stat(path, &sb);
 	if (ret < 0)
-		// could be something other than eexist, just say no
+		/* Could be something other than eexist, just say "no". */
 		return false;
 	return S_ISDIR(sb.st_mode);
 }
@@ -1120,7 +1137,7 @@ int detect_shared_rootfs(void)
 			continue;
 		*p2 = '\0';
 		if (strcmp(p + 1, "/") == 0) {
-			// this is '/'.  is it shared?
+			/* This is '/'. Is it shared? */
 			p = strchr(p2 + 1, ' ');
 			if (p && strstr(p, "shared:")) {
 				fclose(f);
@@ -1186,7 +1203,7 @@ bool detect_ramfs_rootfs(void)
 			continue;
 		*p2 = '\0';
 		if (strcmp(p + 1, "/") == 0) {
-			// this is '/'.  is it the ramfs?
+			/* This is '/'. Is it the ramfs? */
 			p = strchr(p2 + 1, '-');
 			if (p && strncmp(p, "- rootfs rootfs ", 16) == 0) {
 				free(line);
@@ -1259,7 +1276,6 @@ char *choose_init(const char *rootfs)
 	const char *empty = "",
 		   *tmp;
 	int ret, env_set = 0;
-	struct stat mystat;
 
 	if (!getenv("PATH")) {
 		if (setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 0))
@@ -1291,9 +1307,7 @@ char *choose_init(const char *rootfs)
 		ERROR("pathname too long");
 		goto out1;
 	}
-
-	ret = stat(retv, &mystat);
-	if (ret == 0)
+	if (access(retv, X_OK) == 0)
 		return retv;
 
 	ret = snprintf(retv, PATH_MAX, "%s/%s/%s", tmp, LXCINITDIR, "/lxc/lxc-init");
@@ -1301,9 +1315,7 @@ char *choose_init(const char *rootfs)
 		ERROR("pathname too long");
 		goto out1;
 	}
-
-	ret = stat(retv, &mystat);
-	if (ret == 0)
+	if (access(retv, X_OK) == 0)
 		return retv;
 
 	ret = snprintf(retv, PATH_MAX, "%s/usr/lib/lxc/lxc-init", tmp);
@@ -1311,8 +1323,7 @@ char *choose_init(const char *rootfs)
 		ERROR("pathname too long");
 		goto out1;
 	}
-	ret = stat(retv, &mystat);
-	if (ret == 0)
+	if (access(retv, X_OK) == 0)
 		return retv;
 
 	ret = snprintf(retv, PATH_MAX, "%s/sbin/lxc-init", tmp);
@@ -1320,8 +1331,7 @@ char *choose_init(const char *rootfs)
 		ERROR("pathname too long");
 		goto out1;
 	}
-	ret = stat(retv, &mystat);
-	if (ret == 0)
+	if (access(retv, X_OK) == 0)
 		return retv;
 
 	/*
@@ -1339,8 +1349,7 @@ char *choose_init(const char *rootfs)
 		WARN("Nonsense - name /lxc.init.static too long");
 		goto out1;
 	}
-	ret = stat(retv, &mystat);
-	if (ret == 0)
+	if (access(retv, X_OK) == 0)
 		return retv;
 
 out1:
@@ -1403,110 +1412,6 @@ char *get_template_path(const char *t)
 	}
 
 	return tpath;
-}
-
-/*
- * Sets the process title to the specified title. Note that this may fail if
- * the kernel doesn't support PR_SET_MM_MAP (kernels <3.18).
- */
-int setproctitle(char *title)
-{
-	static char *proctitle = NULL;
-	char buf[2048], *tmp;
-	FILE *f;
-	int i, len, ret = 0;
-
-	/* We don't really need to know all of this stuff, but unfortunately
-	 * PR_SET_MM_MAP requires us to set it all at once, so we have to
-	 * figure it out anyway.
-	 */
-	unsigned long start_data, end_data, start_brk, start_code, end_code,
-			start_stack, arg_start, arg_end, env_start, env_end,
-			brk_val;
-	struct prctl_mm_map prctl_map;
-
-	f = fopen_cloexec("/proc/self/stat", "r");
-	if (!f) {
-		return -1;
-	}
-
-	tmp = fgets(buf, sizeof(buf), f);
-	fclose(f);
-	if (!tmp) {
-		return -1;
-	}
-
-	/* Skip the first 25 fields, column 26-28 are start_code, end_code,
-	 * and start_stack */
-	tmp = strchr(buf, ' ');
-	for (i = 0; i < 24; i++) {
-		if (!tmp)
-			return -1;
-		tmp = strchr(tmp+1, ' ');
-	}
-	if (!tmp)
-		return -1;
-
-	i = sscanf(tmp, "%lu %lu %lu", &start_code, &end_code, &start_stack);
-	if (i != 3)
-		return -1;
-
-	/* Skip the next 19 fields, column 45-51 are start_data to arg_end */
-	for (i = 0; i < 19; i++) {
-		if (!tmp)
-			return -1;
-		tmp = strchr(tmp+1, ' ');
-	}
-
-	if (!tmp)
-		return -1;
-
-	i = sscanf(tmp, "%lu %lu %lu %*u %*u %lu %lu",
-		&start_data,
-		&end_data,
-		&start_brk,
-		&env_start,
-		&env_end);
-	if (i != 5)
-		return -1;
-
-	/* Include the null byte here, because in the calculations below we
-	 * want to have room for it. */
-	len = strlen(title) + 1;
-
-	proctitle = realloc(proctitle, len);
-	if (!proctitle)
-		return -1;
-
-	arg_start = (unsigned long) proctitle;
-	arg_end = arg_start + len;
-
-	brk_val = syscall(__NR_brk, 0);
-
-	prctl_map = (struct prctl_mm_map) {
-		.start_code = start_code,
-		.end_code = end_code,
-		.start_stack = start_stack,
-		.start_data = start_data,
-		.end_data = end_data,
-		.start_brk = start_brk,
-		.brk = brk_val,
-		.arg_start = arg_start,
-		.arg_end = arg_end,
-		.env_start = env_start,
-		.env_end = env_end,
-		.auxv = NULL,
-		.auxv_size = 0,
-		.exe_fd = -1,
-	};
-
-	ret = prctl(PR_SET_MM, PR_SET_MM_MAP, (long) &prctl_map, sizeof(prctl_map), 0);
-	if (ret == 0)
-		strcpy((char*)arg_start, title);
-	else
-		INFO("setting cmdline failed - %s", strerror(errno));
-
-	return ret;
 }
 
 /*
@@ -1575,20 +1480,21 @@ static int check_symlink(int fd)
 static int open_if_safe(int dirfd, const char *nextpath)
 {
 	int newfd = openat(dirfd, nextpath, O_RDONLY | O_NOFOLLOW);
-	if (newfd >= 0) // was not a symlink, all good
+	if (newfd >= 0) /* Was not a symlink, all good. */
 		return newfd;
 
 	if (errno == ELOOP)
 		return newfd;
 
 	if (errno == EPERM || errno == EACCES) {
-		/* we're not root (cause we got EPERM) so
-		   try opening with O_PATH */
+		/* We're not root (cause we got EPERM) so try opening with
+		 * O_PATH.
+		 */
 		newfd = openat(dirfd, nextpath, O_PATH | O_NOFOLLOW);
 		if (newfd >= 0) {
-			/* O_PATH will return an fd for symlinks.  We know
-			 * nextpath wasn't a symlink at last openat, so if fd
-			 * is now a link, then something * fishy is going on
+			/* O_PATH will return an fd for symlinks. We know
+			 * nextpath wasn't a symlink at last openat, so if fd is
+			 * now a link, then something * fishy is going on.
 			 */
 			int ret = check_symlink(newfd);
 			if (ret < 0) {
@@ -1688,8 +1594,10 @@ out:
 int safe_mount(const char *src, const char *dest, const char *fstype,
 		unsigned long flags, const void *data, const char *rootfs)
 {
-	int srcfd = -1, destfd, ret, saved_errno;
-	char srcbuf[50], destbuf[50]; // only needs enough for /proc/self/fd/<fd>
+	int destfd, ret, saved_errno;
+	/* Only needs enough for /proc/self/fd/<fd>. */
+	char srcbuf[50], destbuf[50];
+	int srcfd = -1;
 	const char *mntsrc = src;
 
 	if (!rootfs)
@@ -1825,14 +1733,21 @@ int open_devnull(void)
 
 int set_stdfds(int fd)
 {
+	int ret;
+
 	if (fd < 0)
 		return -1;
 
-	if (dup2(fd, 0) < 0)
+	ret = dup2(fd, STDIN_FILENO);
+	if (ret < 0)
 		return -1;
-	if (dup2(fd, 1) < 0)
+
+	ret = dup2(fd, STDOUT_FILENO);
+	if (ret < 0)
 		return -1;
-	if (dup2(fd, 2) < 0)
+
+	ret = dup2(fd, STDERR_FILENO);
+	if (ret < 0)
 		return -1;
 
 	return 0;
@@ -2089,6 +2004,26 @@ int lxc_safe_long(const char *numstr, long int *converted)
 	return 0;
 }
 
+int lxc_safe_long_long(const char *numstr, long long int *converted)
+{
+	char *err = NULL;
+	signed long long int sli;
+
+	errno = 0;
+	sli = strtoll(numstr, &err, 0);
+	if (errno == ERANGE && (sli == LLONG_MAX || sli == LLONG_MIN))
+		return -ERANGE;
+
+	if (errno != 0 && sli == 0)
+		return -EINVAL;
+
+	if (err == numstr || *err != '\0')
+		return -EINVAL;
+
+	*converted = sli;
+	return 0;
+}
+
 int lxc_switch_uid_gid(uid_t uid, gid_t gid)
 {
 	if (setgid(gid) < 0) {
@@ -2323,13 +2258,220 @@ int run_command(char *buf, size_t buf_size, int (*child_fn)(void *), void *args)
 	/* close the write-end of the pipe */
 	close(pipefd[1]);
 
-	bytes = read(pipefd[0], buf, (buf_size > 0) ? (buf_size - 1) : 0);
-	if (bytes > 0)
-		buf[bytes - 1] = '\0';
+	if (buf && buf_size > 0) {
+		bytes = read(pipefd[0], buf, buf_size - 1);
+		if (bytes > 0)
+			buf[bytes - 1] = '\0';
+	}
 
 	fret = wait_for_pid(child);
 	/* close the read-end of the pipe */
 	close(pipefd[0]);
 
 	return fret;
+}
+
+char *must_make_path(const char *first, ...)
+{
+	va_list args;
+	char *cur, *dest;
+	size_t full_len = strlen(first);
+
+	dest = must_copy_string(first);
+
+	va_start(args, first);
+	while ((cur = va_arg(args, char *)) != NULL) {
+		full_len += strlen(cur);
+		if (cur[0] != '/')
+			full_len++;
+		dest = must_realloc(dest, full_len + 1);
+		if (cur[0] != '/')
+			strcat(dest, "/");
+		strcat(dest, cur);
+	}
+	va_end(args);
+
+	return dest;
+}
+
+char *must_copy_string(const char *entry)
+{
+	char *ret;
+
+	if (!entry)
+		return NULL;
+	do {
+		ret = strdup(entry);
+	} while (!ret);
+
+	return ret;
+}
+
+void *must_realloc(void *orig, size_t sz)
+{
+	void *ret;
+
+	do {
+		ret = realloc(orig, sz);
+	} while (!ret);
+
+	return ret;
+}
+
+bool is_fs_type(const struct statfs *fs, fs_type_magic magic_val)
+{
+	return (fs->f_type == (fs_type_magic)magic_val);
+}
+
+bool has_fs_type(const char *path, fs_type_magic magic_val)
+{
+	bool has_type;
+	int ret;
+	struct statfs sb;
+
+	ret = statfs(path, &sb);
+	if (ret < 0)
+		return false;
+
+	has_type = is_fs_type(&sb, magic_val);
+	if (!has_type && magic_val == RAMFS_MAGIC)
+		WARN("When the ramfs it a tmpfs statfs() might report tmpfs");
+
+	return has_type;
+}
+
+bool lxc_nic_exists(char *nic)
+{
+#define __LXC_SYS_CLASS_NET_LEN 15 + IFNAMSIZ + 1
+	char path[__LXC_SYS_CLASS_NET_LEN];
+	int ret;
+	struct stat sb;
+
+	if (!strcmp(nic, "none"))
+		return true;
+
+	ret = snprintf(path, __LXC_SYS_CLASS_NET_LEN, "/sys/class/net/%s", nic);
+	if (ret < 0 || (size_t)ret >= __LXC_SYS_CLASS_NET_LEN)
+		return false;
+
+	ret = stat(path, &sb);
+	if (ret < 0)
+		return false;
+
+	return true;
+}
+
+int lxc_make_tmpfile(char *template, bool rm)
+{
+	int fd, ret;
+
+	fd = mkstemp(template);
+	if (fd < 0)
+		return -1;
+
+	if (!rm)
+		return fd;
+
+	ret = unlink(template);
+	if (ret < 0) {
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+uint64_t lxc_getpagesize(void)
+{
+	int64_t pgsz;
+
+	pgsz = sysconf(_SC_PAGESIZE);
+	if (pgsz <= 0)
+		pgsz = 1 << 12;
+
+	return pgsz;
+}
+
+int parse_byte_size_string(const char *s, int64_t *converted)
+{
+	int ret, suffix_len;
+	long long int conv;
+	int64_t mltpl, overflow;
+	char *end;
+	char dup[LXC_NUMSTRLEN64 + 2];
+	char suffix[3];
+
+	if (!s || !strcmp(s, ""))
+		return -EINVAL;
+
+	end = stpncpy(dup, s, sizeof(dup));
+	if (*end != '\0')
+		return -EINVAL;
+
+	if (isdigit(*(end - 1)))
+		suffix_len = 0;
+	else if (isalpha(*(end - 1)))
+		suffix_len = 1;
+	else
+		return -EINVAL;
+
+	if ((end - 2) == dup && !isdigit(*(end - 2)))
+		return -EINVAL;
+
+	if (isalpha(*(end - 2))) {
+		if (suffix_len == 1)
+			suffix_len++;
+		else
+			return -EINVAL;
+	}
+
+	if (suffix_len > 0) {
+		memcpy(suffix, end - suffix_len, suffix_len);
+		*(suffix + suffix_len) = '\0';
+		*(end - suffix_len) = '\0';
+	}
+	dup[lxc_char_right_gc(dup, strlen(dup))] = '\0';
+
+	ret = lxc_safe_long_long(dup, &conv);
+	if (ret < 0)
+		return -ret;
+
+	if (suffix_len != 2) {
+		*converted = conv;
+		return 0;
+	}
+
+	if (!strcmp(suffix, "kB"))
+		mltpl = 1024;
+	else if (!strcmp(suffix, "MB"))
+		mltpl = 1024 * 1024;
+	else if (!strcmp(suffix, "GB"))
+		mltpl = 1024 * 1024 * 1024;
+	else
+		return -EINVAL;
+
+	overflow = conv * mltpl;
+	if (conv != 0 && (overflow / conv) != mltpl)
+		return -ERANGE;
+
+	*converted = overflow;
+	return 0;
+}
+
+uint64_t lxc_find_next_power2(uint64_t n)
+{
+	/* 0 is not valid input. We return 0 to the caller since 0 is not a
+	 * valid power of two.
+	 */
+	if (n == 0)
+		return 0;
+
+	if (!(n & (n - 1)))
+		return n;
+
+	while (n & (n - 1))
+		n = n & (n - 1);
+
+	n = n << 1;
+	return n;
 }

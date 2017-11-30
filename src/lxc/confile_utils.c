@@ -29,8 +29,10 @@
 #include "confile.h"
 #include "confile_utils.h"
 #include "error.h"
-#include "log.h"
 #include "list.h"
+#include "log.h"
+#include "lxccontainer.h"
+#include "network.h"
 #include "parse.h"
 #include "utils.h"
 
@@ -91,8 +93,6 @@ int parse_idmaps(const char *idmap, char *type, unsigned long *nsid,
 
 	/* Move beyond \0. */
 	slide++;
-	/* align */
-	window = slide;
 	/* Validate that only whitespace follows. */
 	slide += strspn(slide, " \t\r");
 	/* If there was only one whitespace then we whiped it with our \0 above.
@@ -117,8 +117,6 @@ int parse_idmaps(const char *idmap, char *type, unsigned long *nsid,
 
 	/* Move beyond \0. */
 	slide++;
-	/* align */
-	window = slide;
 	/* Validate that only whitespace follows. */
 	slide += strspn(slide, " \t\r");
 	/* If there was only one whitespace then we whiped it with our \0 above.
@@ -253,12 +251,19 @@ void lxc_log_configured_netdevs(const struct lxc_conf *conf)
 		netdev = it->elem;
 
 		TRACE("index: %zd", netdev->idx);
+		TRACE("ifindex: %d", netdev->ifindex);
 		switch (netdev->type) {
 		case LXC_NET_VETH:
 			TRACE("type: veth");
-			if (netdev->priv.veth_attr.pair)
+			if (netdev->priv.veth_attr.pair[0] != '\0')
 				TRACE("veth pair: %s",
 				      netdev->priv.veth_attr.pair);
+			if (netdev->priv.veth_attr.veth1[0] != '\0')
+				TRACE("veth1 : %s",
+				      netdev->priv.veth_attr.veth1);
+			if (netdev->priv.veth_attr.ifindex > 0)
+				TRACE("host side ifindex for veth device: %d",
+				      netdev->priv.veth_attr.ifindex);
 			break;
 		case LXC_NET_MACVLAN:
 			TRACE("type: macvlan");
@@ -277,6 +282,10 @@ void lxc_log_configured_netdevs(const struct lxc_conf *conf)
 			break;
 		case LXC_NET_PHYS:
 			TRACE("type: phys");
+			if (netdev->priv.phys_attr.ifindex > 0) {
+				TRACE("host side ifindex for phys device: %d",
+				      netdev->priv.phys_attr.ifindex);
+			}
 			break;
 		case LXC_NET_EMPTY:
 			TRACE("type: empty");
@@ -292,9 +301,9 @@ void lxc_log_configured_netdevs(const struct lxc_conf *conf)
 		if (netdev->type != LXC_NET_EMPTY) {
 			TRACE("flags: %s",
 			      netdev->flags == IFF_UP ? "up" : "none");
-			if (netdev->link)
+			if (netdev->link[0] != '\0')
 				TRACE("link: %s", netdev->link);
-			if (netdev->name)
+			if (netdev->name[0] != '\0')
 				TRACE("name: %s", netdev->name);
 			if (netdev->hwaddr)
 				TRACE("hwaddr: %s", netdev->hwaddr);
@@ -342,10 +351,6 @@ static void lxc_free_netdev(struct lxc_netdev *netdev)
 {
 	struct lxc_list *cur, *next;
 
-	free(netdev->link);
-	free(netdev->name);
-	if (netdev->type == LXC_NET_VETH)
-		free(netdev->priv.veth_attr.pair);
 	free(netdev->upscript);
 	free(netdev->downscript);
 	free(netdev->hwaddr);
@@ -495,9 +500,15 @@ int config_ip_prefix(struct in_addr *addr)
 	return 0;
 }
 
-int network_ifname(char **valuep, const char *value)
+int network_ifname(char *valuep, const char *value)
 {
-	return set_config_string_item_max(valuep, value, IFNAMSIZ);
+	if (strlen(value) >= IFNAMSIZ) {
+		ERROR("Network devie name \"%s\" is too long (>= %zu)", value,
+		      (size_t)IFNAMSIZ);
+	}
+
+	strcpy(valuep, value);
+	return 0;
 }
 
 int rand_complete_hwaddr(char *hwaddr)
@@ -534,61 +545,18 @@ int rand_complete_hwaddr(char *hwaddr)
 
 bool lxc_config_net_hwaddr(const char *line)
 {
-	char *copy, *p;
+	unsigned index;
+	char tmp[7];
 
 	if (strncmp(line, "lxc.net", 7) != 0)
 		return false;
+	if (strncmp(line, "lxc.net.hwaddr", 14) == 0)
+		return true;
 	if (strncmp(line, "lxc.network.hwaddr", 18) == 0)
 		return true;
+	if (sscanf(line, "lxc.net.%u.%6s", &index, tmp) == 2 || sscanf(line, "lxc.network.%u.%6s", &index, tmp) == 2)
+		return strncmp(tmp, "hwaddr", 6) == 0;
 
-	/* We have to dup the line, if line is something like
-	 * "lxc.net.[i].xxx = xxxxx ", we need to remove
-	 * '[i]' and compare its key with 'lxc.net.hwaddr'*/
-	copy = strdup(line);
-	if (!copy) {
-		SYSERROR("failed to allocate memory");
-		return false;
-	}
-	if (*(copy + 8) >= '0' && *(copy + 8) <= '9') {
-		p = strchr(copy + 8, '.');
-		if (!p) {
-			free(copy);
-			return false;
-		}
-		/* strlen("hwaddr") = 6 */
-		strncpy(copy + 8, p + 1, 6);
-		copy[8 + 6] = '\0';
-	}
-	if (strncmp(copy, "lxc.net.hwaddr", 14) == 0) {
-		free(copy);
-		return true;
-	}
-	free(copy);
-
-	/* We have to dup the line second time, if line is something like
-	 * "lxc.network.[i].xxx = xxxxx ", we need to remove
-	 * '[i]' and compare its key with 'lxc.network.hwaddr'*/
-	copy = strdup(line);
-	if (!copy) {
-		SYSERROR("failed to allocate memory");
-		return false;
-	}
-	if (*(copy + 12) >= '0' && *(copy + 12) <= '9') {
-		p = strchr(copy + 12, '.');
-		if (!p) {
-			free(copy);
-			return false;
-		}
-		/* strlen("hwaddr") = 6 */
-		strncpy(copy + 12, p + 1, 6);
-		copy[12 + 6] = '\0';
-	}
-	if (strncmp(copy, "lxc.network.hwaddr", 18) == 0) {
-		free(copy);
-		return true;
-	}
-
-	free(copy);
 	return false;
 }
 
@@ -662,7 +630,17 @@ int lxc_get_conf_int(struct lxc_conf *c, char *retv, int inlen, int v)
 	return snprintf(retv, inlen, "%d", v);
 }
 
-bool parse_limit_value(const char **value, unsigned long *res)
+int lxc_get_conf_uint64(struct lxc_conf *c, char *retv, int inlen, uint64_t v)
+{
+	if (!retv)
+		inlen = 0;
+	else
+		memset(retv, 0, inlen);
+
+	return snprintf(retv, inlen, "%"PRIu64, v);
+}
+
+bool parse_limit_value(const char **value, rlim_t *res)
 {
 	char *endptr = NULL;
 
@@ -673,7 +651,7 @@ bool parse_limit_value(const char **value, unsigned long *res)
 	}
 
 	errno = 0;
-	*res = strtoul(*value, &endptr, 10);
+	*res = strtoull(*value, &endptr, 10);
 	if (errno || !endptr)
 		return false;
 	*value = endptr;
@@ -681,3 +659,76 @@ bool parse_limit_value(const char **value, unsigned long *res)
 	return true;
 }
 
+static int lxc_container_name_to_pid(const char *lxcname_or_pid,
+				     const char *lxcpath)
+{
+	int ret;
+	signed long int pid;
+	char *err = NULL;
+
+	pid = strtol(lxcname_or_pid, &err, 10);
+	if (*err != '\0' || pid < 1) {
+		struct lxc_container *c;
+
+		c = lxc_container_new(lxcname_or_pid, lxcpath);
+		if (!c) {
+			ERROR("\"%s\" is not a valid pid nor a container name",
+			      lxcname_or_pid);
+			return -1;
+		}
+
+		if (!c->may_control(c)) {
+			ERROR("Insufficient privileges to control container "
+			      "\"%s\"", c->name);
+			lxc_container_put(c);
+			return -1;
+		}
+
+		pid = c->init_pid(c);
+		if (pid < 1) {
+			ERROR("Container \"%s\" is not running", c->name);
+			lxc_container_put(c);
+			return -1;
+		}
+
+		lxc_container_put(c);
+	}
+
+	ret = kill(pid, 0);
+	if (ret < 0) {
+		ERROR("%s - Failed to send signal to pid %d", strerror(errno),
+		      (int)pid);
+		return -EPERM;
+	}
+
+	return pid;
+}
+
+int lxc_inherit_namespace(const char *lxcname_or_pid, const char *lxcpath,
+			  const char *namespace)
+{
+	int fd, pid;
+	char *dup, *lastslash;
+
+	lastslash = strrchr(lxcname_or_pid, '/');
+	if (lastslash) {
+		dup = strdup(lxcname_or_pid);
+		if (!dup)
+			return -ENOMEM;
+
+		dup[lastslash - lxcname_or_pid] = '\0';
+		pid = lxc_container_name_to_pid(lastslash + 1, dup);
+		free(dup);
+	} else {
+		pid = lxc_container_name_to_pid(lxcname_or_pid, lxcpath);
+	}
+
+	if (pid < 0)
+		return -EINVAL;
+
+	fd = lxc_preserve_ns(pid, namespace);
+	if (fd < 0)
+		return -EINVAL;
+
+	return fd;
+}

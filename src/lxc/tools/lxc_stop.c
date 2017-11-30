@@ -36,8 +36,6 @@
 #define OPT_NO_LOCK OPT_USAGE + 1
 #define OPT_NO_KILL OPT_USAGE + 2
 
-lxc_log_define(lxc_stop_ui, lxc);
-
 static int my_parser(struct lxc_arguments *args, int c, char *arg)
 {
 	switch (c) {
@@ -172,6 +170,9 @@ int main(int argc, char *argv[])
 	if (lxc_log_init(&log))
 		exit(ret);
 	lxc_log_options_no_override();
+
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
 
 	/* Set default timeout */
 	if (my_args.timeout == -2) {

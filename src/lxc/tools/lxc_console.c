@@ -46,8 +46,6 @@
 #include "mainloop.h"
 #include "utils.h"
 
-lxc_log_define(lxc_console_ui, lxc);
-
 static char etoc(const char *expr)
 {
 	/* returns "control code" of given expression */
@@ -118,6 +116,9 @@ int main(int argc, char *argv[])
 	if (ret)
 		return EXIT_FAILURE;
 	lxc_log_options_no_override();
+
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
 
 	c = lxc_container_new(my_args.name, my_args.lxcpath[0]);
 	if (!c) {

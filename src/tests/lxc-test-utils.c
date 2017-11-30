@@ -41,33 +41,37 @@
 
 void test_lxc_deslashify(void)
 {
-	char *s = strdup("/A///B//C/D/E/");
-	if (!s)
-		exit(EXIT_FAILURE);
-	lxc_test_assert_abort(lxc_deslashify(&s));
-	lxc_test_assert_abort(strcmp(s, "/A/B/C/D/E") == 0);
-	free(s);
+	char *s = "/A///B//C/D/E/";
+	char *t;
 
-	s = strdup("/A");
-	if (!s)
+	t = lxc_deslashify(s);
+	if (!t)
 		exit(EXIT_FAILURE);
-	lxc_test_assert_abort(lxc_deslashify(&s));
-	lxc_test_assert_abort(strcmp(s, "/A") == 0);
-	free(s);
+	lxc_test_assert_abort(strcmp(t, "/A/B/C/D/E") == 0);
+	free(t);
 
-	s = strdup("");
-	if (!s)
-		exit(EXIT_FAILURE);
-	lxc_test_assert_abort(lxc_deslashify(&s));
-	lxc_test_assert_abort(strcmp(s, "") == 0);
-	free(s);
+	s = "/A";
 
-	s = strdup("//");
-	if (!s)
+	t = lxc_deslashify(s);
+	if (!t)
 		exit(EXIT_FAILURE);
-	lxc_test_assert_abort(lxc_deslashify(&s));
-	lxc_test_assert_abort(strcmp(s, "/") == 0);
-	free(s);
+	lxc_test_assert_abort(strcmp(t, "/A") == 0);
+	free(t);
+
+	s = "";
+	t = lxc_deslashify(s);
+	if (!t)
+		exit(EXIT_FAILURE);
+	lxc_test_assert_abort(strcmp(t, "") == 0);
+	free(t);
+
+	s = "//";
+
+	t = lxc_deslashify(s);
+	if (!t)
+		exit(EXIT_FAILURE);
+	lxc_test_assert_abort(strcmp(t, "/") == 0);
+	free(t);
 }
 
 /* /proc/int_as_str/ns/mnt\0 = (5 + 21 + 7 + 1) */
@@ -376,6 +380,111 @@ void test_lxc_string_in_array(void)
 	lxc_test_assert_abort(lxc_string_in_array("XYZ", (const char *[]){"BERTA", "ARQWE(9", "C8Zhkd", "7U", "XYZ", "UOIZ9", "=)()", NULL}));
 }
 
+void test_parse_byte_size_string(void)
+{
+	int ret;
+	int64_t n;
+
+	ret = parse_byte_size_string("0", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 0)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1 ", &n);
+	if (ret == 0)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1B", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1kB", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1024)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1MB", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1048576)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1GB", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1073741824)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1TB", &n);
+	if (ret == 0)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1 B", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1 kB", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1024)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1 MB", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1048576)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1 GB", &n);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
+	if (n != 1073741824)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("1 TB", &n);
+	if (ret == 0)
+		exit(EXIT_FAILURE);
+
+	ret = parse_byte_size_string("asdf", &n);
+	if (ret == 0)
+		exit(EXIT_FAILURE);
+}
+
+void test_lxc_config_net_hwaddr(void)
+{
+	bool lxc_config_net_hwaddr(const char *line);
+
+	if (!lxc_config_net_hwaddr("lxc.net.0.hwaddr = 00:16:3e:04:65:b8\n"))
+		exit(EXIT_FAILURE);
+	if (!lxc_config_net_hwaddr("lxc.network.hwaddr = 00:16:3e:04:65:b8\n"))
+		exit(EXIT_FAILURE);
+	if (!lxc_config_net_hwaddr("lxc.net.hwaddr = 00:16:3e:04:65:b8\n"))
+		exit(EXIT_FAILURE);
+
+	if (lxc_config_net_hwaddr("lxc.net"))
+		exit(EXIT_FAILURE);
+	if (lxc_config_net_hwaddr("lxc.net."))
+		exit(EXIT_FAILURE);
+	if (lxc_config_net_hwaddr("lxc.net.0."))
+		exit(EXIT_FAILURE);
+	if (lxc_config_net_hwaddr("lxc.network"))
+	       exit(EXIT_FAILURE);
+	if (lxc_config_net_hwaddr("lxc.network.0."))
+	       exit(EXIT_FAILURE);
+}
+
 int main(int argc, char *argv[])
 {
 	test_lxc_string_replace();
@@ -385,6 +494,8 @@ int main(int argc, char *argv[])
 	test_lxc_safe_uint();
 	test_lxc_safe_int();
 	test_lxc_safe_long();
+	test_parse_byte_size_string();
+	test_lxc_config_net_hwaddr();
 
 	exit(EXIT_SUCCESS);
 }

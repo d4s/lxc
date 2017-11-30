@@ -42,23 +42,14 @@
 #include "start.h"
 #include "utils.h"
 
-lxc_log_define(lxc_execute_ui, lxc);
-
 static struct lxc_list defines;
-
-static int my_checker(const struct lxc_arguments* args)
-{
-	if (!args->argc) {
-		lxc_error(args, "missing command to execute !");
-		return -1;
-	}
-
-	return 0;
-}
 
 static int my_parser(struct lxc_arguments* args, int c, char* arg)
 {
 	switch (c) {
+	case 'd':
+		args->daemonize = 1;
+		break;
 	case 'f':
 		args->rcfile = arg;
 		break;
@@ -77,6 +68,7 @@ static int my_parser(struct lxc_arguments* args, int c, char* arg)
 }
 
 static const struct option my_longopts[] = {
+	{"daemon", no_argument, 0, 'd'},
 	{"rcfile", required_argument, 0, 'f'},
 	{"define", required_argument, 0, 's'},
 	{"uid", required_argument, 0, 'u'},
@@ -100,8 +92,26 @@ Options :\n\
   -g, --gid=GID        Execute COMMAND with GID inside the container\n",
 	.options  = my_longopts,
 	.parser   = my_parser,
-	.checker  = my_checker,
+	.daemonize = 0,
 };
+
+static bool set_argv(struct lxc_conf *conf, struct lxc_arguments *args)
+{
+	char **components, **p;
+
+	if (!conf->execute_cmd)
+		return false;
+
+	components = lxc_string_split_quoted(conf->execute_cmd);
+	if (!components)
+		return false;
+
+	args->argv = components;
+	for (p = components; *p; p++)
+		args->argc++;
+
+	return true;
+}
 
 int main(int argc, char *argv[])
 {
@@ -129,25 +139,42 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	lxc_log_options_no_override();
 
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
+
 	c = lxc_container_new(my_args.name, my_args.lxcpath[0]);
 	if (!c) {
-		ERROR("Failed to create lxc_container");
+		fprintf(stderr, "Failed to create lxc_container\n");
 		exit(EXIT_FAILURE);
 	}
 
 	if (my_args.rcfile) {
 		c->clear_config(c);
 		if (!c->load_config(c, my_args.rcfile)) {
-			ERROR("Failed to load rcfile");
+			fprintf(stderr, "Failed to load rcfile\n");
 			lxc_container_put(c);
 			exit(EXIT_FAILURE);
 		}
 		c->configfile = strdup(my_args.rcfile);
 		if (!c->configfile) {
-			ERROR("Out of memory setting new config filename");
+			fprintf(stderr, "Out of memory setting new config filename\n");
 			lxc_container_put(c);
 			exit(EXIT_FAILURE);
 		}
+	}
+
+	if (my_args.argc == 0) {
+		if (!set_argv(c->lxc_conf, &my_args)) {
+			fprintf(stderr, "missing command to execute!\n");
+			lxc_container_put(c);
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	ret = lxc_config_define_load(&defines, c->lxc_conf);
+	if (ret) {
+		lxc_container_put(c);
+		exit(EXIT_FAILURE);
 	}
 
 	if (my_args.uid)
@@ -156,11 +183,13 @@ int main(int argc, char *argv[])
 	if (my_args.gid)
 		c->lxc_conf->init_gid = my_args.gid;
 
-	c->daemonize = false;
+	c->daemonize = my_args.daemonize == 1;
 	bret = c->start(c, 1, my_args.argv);
 	ret = c->error_num;
 	lxc_container_put(c);
-	if (!bret)
+	if (!bret) {
+		fprintf(stderr, "Failed run an application inside container\n");
 		exit(EXIT_FAILURE);
+	}
 	exit(ret);
 }

@@ -222,7 +222,7 @@ int lxc_unix_epoch_to_utc(char *buf, size_t bufsize, const struct timespec *time
 	seconds = (time->tv_sec - d_in_s - h_in_s - (minutes * 60));
 
 	/* Make string from nanoseconds. */
-	ret = snprintf(nanosec, LXC_NUMSTRLEN64, "%ld", time->tv_nsec);
+	ret = snprintf(nanosec, LXC_NUMSTRLEN64, "%"PRId64, (int64_t)time->tv_nsec);
 	if (ret < 0 || ret >= LXC_NUMSTRLEN64)
 		return -1;
 
@@ -264,7 +264,7 @@ static int log_append_logfile(const struct lxc_log_appender *appender,
 {
 	char buffer[LXC_LOG_BUFFER_SIZE];
 	char date_time[LXC_LOG_TIME_SIZE];
-	int n;
+	int n, ret;
 	int fd_to_use = -1;
 
 #ifndef NO_LXC_CONF
@@ -295,9 +295,15 @@ static int log_append_logfile(const struct lxc_log_appender *appender,
 	if (n < 0)
 		return n;
 
-	if ((size_t)n < (sizeof(buffer) - 1))
-		n += vsnprintf(buffer + n, sizeof(buffer) - n, event->fmt, *event->vap);
-	else
+	if ((size_t)n < (sizeof(buffer) - 1)) {
+		ret = vsnprintf(buffer + n, sizeof(buffer) - n, event->fmt, *event->vap);
+		if (ret < 0)
+			return 0;
+
+		n += ret;
+	}
+
+	if ((size_t)n >= sizeof(buffer))
 		n = sizeof(buffer) - 1;
 
 	buffer[n] = '\n';
@@ -340,10 +346,11 @@ struct lxc_log_category lxc_log_category_lxc = {
 /*---------------------------------------------------------------------------*/
 static int build_dir(const char *name)
 {
-	char *n = strdup(name);  // because we'll be modifying it
-	char *p, *e;
 	int ret;
+	char *e, *n, *p;
 
+	/* Make copy of string since we'll be modifying it. */
+	n = strdup(name);
 	if (!n) {
 		ERROR("Out of memory while creating directory '%s'.", name);
 		return -1;
@@ -470,10 +477,9 @@ extern void lxc_log_close(void)
  */
 static int __lxc_log_set_file(const char *fname, int create_dirs)
 {
-	if (lxc_log_fd != -1) {
-		// we are overriding the default.
+	/* we are overriding the default. */
+	if (lxc_log_fd != -1)
 		lxc_log_close();
-	}
 
 	if (!fname)
 		return -1;
@@ -484,8 +490,9 @@ static int __lxc_log_set_file(const char *fname, int create_dirs)
 	}
 
 #if USE_CONFIGPATH_LOGS
-	// we don't build_dir for the default if the default is
-	// i.e. /var/lib/lxc/$container/$container.log
+	/* We don't build_dir for the default if the default is i.e.
+	 * /var/lib/lxc/$container/$container.log.
+	 */
 	if (create_dirs)
 #endif
 	if (build_dir(fname)) {
@@ -526,6 +533,17 @@ extern int lxc_log_syslog(int facility)
 		lxc_log_category_lxc.appender = &log_appender_syslog;
 		return 0;
 	}
+
+	appender = lxc_log_category_lxc.appender;
+	/* Check if syslog was already added, to avoid creating a loop */
+	while (appender) {
+		if (appender == &log_appender_syslog) {
+			/* not an error: openlog re-opened the connection */
+			return 0;
+		}
+		appender = appender->next;
+	}
+
 	appender = lxc_log_category_lxc.appender;
 	while (appender->next != NULL)
 		appender = appender->next;

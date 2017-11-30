@@ -439,8 +439,8 @@ copy_configuration()
     # include configuration from default.conf if available
     grep -q "^lxc." "${lxc_default_conf}" > "${config}" 2>/dev/null
 
-    grep -q "^lxc.rootfs" "${config}" 2>/dev/null || echo "
-lxc.rootfs = ${rootfs}
+    grep -q "^lxc.rootfs.path" "${config}" 2>/dev/null || echo "
+lxc.rootfs.path = ${rootfs}
 " >> "${config}"
 
     # The following code is to create static MAC addresses for each
@@ -489,7 +489,7 @@ lxc.arch = ${basearch}
 lxc.uts.name = ${utsname}
 
 # When using LXC with apparmor, uncomment the next line to run unconfined:
-#lxc.aa_profile = unconfined
+#lxc.apparmor.profile = unconfined
 
 # example simple networking setup, uncomment to enable
 #lxc.net.0.type = ${lxc_network_type}
@@ -520,7 +520,7 @@ copy_fedora()
     echo -n "Copying ${cache} to ${rootfs} ... "
 
     mkdir -p "${rootfs}" &&
-    rsync --archive --hard-links --sparse "${cache}/" "${rootfs}/" &&
+    rsync --archive --hard-links --sparse --acls --xattrs "${cache}/" "${rootfs}/" &&
     echo || return 1
 
     return 0
@@ -1185,10 +1185,10 @@ fi
 config="${path}/config"
 if [ -z "${rootfs}" ]
 then
-    # check for 'lxc.rootfs' passed in through default config by lxc-create
-    if grep -q '^lxc.rootfs' "${config}" 2>/dev/null
+    # check for 'lxc.rootfs.path' passed in through default config by lxc-create
+    if grep -q '^lxc.rootfs.path' "${config}" 2>/dev/null
     then
-        rootfs=$(awk -F= '/^lxc.rootfs =/{ print $2 }' "${config}")
+        rootfs=$(awk -F= '/^lxc.rootfs.path =/{ print $2 }' "${config}")
     else
         rootfs="${path}/rootfs"
     fi

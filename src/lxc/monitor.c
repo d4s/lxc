@@ -105,10 +105,10 @@ static void lxc_monitor_fifo_send(struct lxc_msg *msg, const char *lxcpath)
 		/* It is normal for this open() to fail with ENXIO when there is
 		 * no monitor running, so we don't log it.
 		 */
-		if (errno == ENXIO)
+		if (errno == ENXIO || errno == ENOENT)
 			return;
 
-		WARN("Failed to open fifo to send message: %s.", strerror(errno));
+		WARN("%s - Failed to open fifo to send message", strerror(errno));
 		return;
 	}
 
@@ -243,7 +243,6 @@ int lxc_monitor_open(const char *lxcpath)
 		ERROR("Failed to connect to monitor socket: %s.", strerror(errno));
 		goto on_error;
 	}
-	ret = 0;
 
 	return fd;
 
@@ -262,7 +261,7 @@ int lxc_monitor_read_fdset(struct pollfd *fds, nfds_t nfds, struct lxc_msg *msg,
 	if (ret == -1)
 		return -1;
 	else if (ret == 0)
-		return -2;  // timed out
+		return -2;  /* timed out */
 
 	/* Only read from the first ready fd, the others will remain ready for
 	 * when this routine is called again.
@@ -370,7 +369,7 @@ int lxc_monitord_spawn(const char *lxcpath)
 		exit(EXIT_FAILURE);
 	}
 
-	lxc_check_inherited(NULL, true, pipefd[1]);
+	lxc_check_inherited(NULL, true, &pipefd[1], 1);
 	if (null_stdfds() < 0) {
 		SYSERROR("Failed to dup2() standard file descriptors to /dev/null.");
 		exit(EXIT_FAILURE);

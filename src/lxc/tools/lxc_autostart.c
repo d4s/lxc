@@ -28,7 +28,6 @@
 #include "log.h"
 #include "utils.h"
 
-lxc_log_define(lxc_autostart_ui, lxc);
 static struct lxc_list *accumulate_list(char *input, char *delimiter, struct lxc_list *str_list);
 
 struct lxc_list *cmd_groups_list = NULL;
@@ -309,7 +308,7 @@ static int get_config_integer(struct lxc_container *c, char *key) {
 	}
 
 	if (lxc_safe_int(value, &ret) < 0)
-		DEBUG("Could not parse config item.");
+		printf("Could not parse config item.\n");
 
 	free(value);
 
@@ -367,6 +366,9 @@ int main(int argc, char *argv[])
 	if (lxc_log_init(&log))
 		exit(EXIT_FAILURE);
 	lxc_log_options_no_override();
+
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
 
 	count = list_defined_containers(my_args.lxcpath[0], NULL, &containers);
 

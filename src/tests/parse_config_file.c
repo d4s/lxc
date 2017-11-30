@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <libgen.h>
 
 #include "confile_utils.h"
 #include "lxc/state.h"
@@ -95,25 +96,25 @@ static int set_and_clear_complete_netdev(struct lxc_container *c)
 		return -1;
 	}
 
-	if (!c->set_config_item(c, "lxc.net.1.ipv4", "10.0.2.3/24")) {
-		lxc_error("%s\n", "lxc.net.1.ipv4");
+	if (!c->set_config_item(c, "lxc.net.1.ipv4.address", "10.0.2.3/24")) {
+		lxc_error("%s\n", "lxc.net.1.ipv4.address");
 		return -1;
 	}
 
-	if (!c->set_config_item(c, "lxc.net.1.ipv4_gateway", "10.0.2.2")) {
-		lxc_error("%s\n", "lxc.net.1.ipv4");
+	if (!c->set_config_item(c, "lxc.net.1.ipv4.gateway", "10.0.2.2")) {
+		lxc_error("%s\n", "lxc.net.1.ipv4.gateway");
 		return -1;
 	}
 
-	if (!c->set_config_item(c, "lxc.net.1.ipv6",
+	if (!c->set_config_item(c, "lxc.net.1.ipv6.address",
 				"2003:db8:1:0:214:1234:fe0b:3596/64")) {
-		lxc_error("%s\n", "lxc.net.1.ipv6");
+		lxc_error("%s\n", "lxc.net.1.ipv6.address");
 		return -1;
 	}
 
-	if (!c->set_config_item(c, "lxc.net.1.ipv6_gateway",
+	if (!c->set_config_item(c, "lxc.net.1.ipv6.gateway",
 				"2003:db8:1:0::1")) {
-		lxc_error("%s\n", "lxc.net.1.ipv6");
+		lxc_error("%s\n", "lxc.net.1.ipv6.gateway");
 		return -1;
 	}
 
@@ -145,6 +146,33 @@ static int set_and_clear_complete_netdev(struct lxc_container *c)
 
 	if (!c->clear_config_item(c, "lxc.net.1")) {
 		lxc_error("%s", "failed to clear \"lxc.net.1\"\n");
+		return -1;
+	}
+
+	c->clear_config(c);
+	c->lxc_conf = NULL;
+
+	return 0;
+}
+
+static int set_invalid_netdev(struct lxc_container *c) {
+	if (c->set_config_item(c, "lxc.net.0.asdf", "veth")) {
+		lxc_error("%s\n", "lxc.net.0.asdf should be invalid");
+		return -1;
+	}
+
+	if (c->set_config_item(c, "lxc.net.2147483647.type", "veth")) {
+		lxc_error("%s\n", "lxc.net.2147483647.type should be invalid");
+		return -1;
+	}
+
+	if (c->set_config_item(c, "lxc.net.0.", "veth")) {
+		lxc_error("%s\n", "lxc.net.0. should be invalid");
+		return -1;
+	}
+
+	if (c->set_config_item(c, "lxc.network.0.", "veth")) {
+		lxc_error("%s\n", "lxc.network.0. should be invalid");
 		return -1;
 	}
 
@@ -279,12 +307,6 @@ int main(int argc, char *argv[])
 	char tmpf[] = "lxc-parse-config-file-XXXXXX";
 	char retval[4096] = {0};
 
-	c = lxc_container_new(tmpf, NULL);
-	if (!c) {
-		lxc_error("%s\n", "failed to create new container");
-		exit(EXIT_FAILURE);
-	}
-
 	fd = mkstemp(tmpf);
 	if (fd < 0) {
 		lxc_error("%s\n", "Could not create temporary file");
@@ -292,6 +314,11 @@ int main(int argc, char *argv[])
 	}
 	close(fd);
 
+	c = lxc_container_new(tmpf, NULL);
+	if (!c) {
+		lxc_error("%s\n", "Failed to create new container");
+		exit(EXIT_FAILURE);
+	}
 
 	/* lxc.arch */
 	if (set_get_compare_clear_save_load(c, "lxc.arch", "x86_64", tmpf,
@@ -300,17 +327,35 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	/* lxc.pts */
+	/* REMOVE IN LXC 3.0
+	   legacy ps keys
+	 */
 	if (set_get_compare_clear_save_load(c, "lxc.pts", "1000", tmpf, true) <
 	    0) {
 		lxc_error("%s\n", "lxc.pts");
 		goto non_test_error;
 	}
 
-	/* lxc.tty */
+	/* lxc.pty.max */
+	if (set_get_compare_clear_save_load(c, "lxc.pty.max", "1000", tmpf, true) <
+	    0) {
+		lxc_error("%s\n", "lxc.pty.max");
+		goto non_test_error;
+	}
+
+	/* REMOVE IN LXC 3.0
+	   legacy tty.max keys
+	 */
 	if (set_get_compare_clear_save_load(c, "lxc.tty", "4", tmpf, true) <
 	    0) {
 		lxc_error("%s\n", "lxc.tty");
+		goto non_test_error;
+	}
+
+	/* lxc.tty.max */
+	if (set_get_compare_clear_save_load(c, "lxc.tty.max", "4", tmpf, true) <
+	    0) {
+		lxc_error("%s\n", "lxc.tty.max");
 		goto non_test_error;
 	}
 
@@ -353,7 +398,7 @@ int main(int argc, char *argv[])
 	 */
 	if (set_get_compare_clear_save_load(c, "lxc.se_context", "system_u:system_r:lxc_t:s0:c22",
 					    tmpf, true) < 0) {
-		lxc_error("%s\n", "lxc.apparmor.se_context");
+		lxc_error("%s\n", "lxc.se_context");
 		goto non_test_error;
 	}
 
@@ -374,7 +419,7 @@ int main(int argc, char *argv[])
 	/* lxc.selinux.context */
 	if (set_get_compare_clear_save_load(c, "lxc.selinux.context", "system_u:system_r:lxc_t:s0:c22",
 					    tmpf, true) < 0) {
-		lxc_error("%s\n", "lxc.apparmor.selinux.context");
+		lxc_error("%s\n", "lxc.selinux.context");
 		goto non_test_error;
 	}
 
@@ -437,6 +482,34 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	/* lxc.idmap
+	 * We can't really save the config here since save_config() wants to
+	 * chown the container's directory but we haven't created an on-disk
+	 * container. So let's test set-get-clear.
+	 */
+	if (set_get_compare_clear_save_load(
+		c, "lxc.idmap", "u 0 100000 1000000000", NULL, false) < 0) {
+		lxc_error("%s\n", "lxc.idmap");
+		goto non_test_error;
+	}
+
+	if (!c->set_config_item(c, "lxc.idmap", "u 1 100000 10000000")) {
+		lxc_error("%s\n", "failed to set config item "
+				  "\"lxc.idmap\" to \"u 1 100000 10000000\"");
+		return -1;
+	}
+
+	if (!c->set_config_item(c, "lxc.idmap", "g 1 100000 10000000")) {
+		lxc_error("%s\n", "failed to set config item "
+				  "\"lxc.idmap\" to \"g 1 100000 10000000\"");
+		return -1;
+	}
+
+	if (!c->get_config_item(c, "lxc.idmap", retval, sizeof(retval))) {
+		lxc_error("%s\n", "failed to get config item \"lxc.cgroup\"");
+		return -1;
+	}
+
 	c->clear_config(c);
 	c->lxc_conf = NULL;
 
@@ -473,10 +546,19 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	/* lxc.mount */
+	/* REMOVE IN LXC 3.0
+	   legacy lxc.mount key
+	 */
 	if (set_get_compare_clear_save_load(c, "lxc.mount", "/some/path", NULL,
 					    true) < 0) {
 		lxc_error("%s\n", "lxc.mount");
+		goto non_test_error;
+	}
+
+	/* lxc.mount.fstab */
+	if (set_get_compare_clear_save_load(c, "lxc.mount.fstab", "/some/path", NULL,
+					    true) < 0) {
+		lxc_error("%s\n", "lxc.mount.fstab");
 		goto non_test_error;
 	}
 
@@ -503,10 +585,19 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	/* lxc.rootfs */
+	/* REMOVE IN LXC 3.0
+	   legacy lxc.rootfs key
+	 */
 	if (set_get_compare_clear_save_load(c, "lxc.rootfs", "/some/path", tmpf,
 					    true) < 0) {
 		lxc_error("%s\n", "lxc.rootfs");
+		goto non_test_error;
+	}
+
+	/* lxc.rootfs.path */
+	if (set_get_compare_clear_save_load(c, "lxc.rootfs.path", "/some/path", tmpf,
+					    true) < 0) {
+		lxc_error("%s\n", "lxc.rootfs.path");
 		goto non_test_error;
 	}
 
@@ -521,13 +612,6 @@ int main(int argc, char *argv[])
 	if (set_get_compare_clear_save_load(c, "lxc.rootfs.options",
 					    "ext4,discard", tmpf, true) < 0) {
 		lxc_error("%s\n", "lxc.rootfs.options");
-		goto non_test_error;
-	}
-
-	/* lxc.rootfs.backend */
-	if (set_get_compare_clear_save_load(c, "lxc.rootfs.backend", "btrfs",
-					    tmpf, true) < 0) {
-		lxc_error("%s\n", "lxc.rootfs.backend");
 		goto non_test_error;
 	}
 
@@ -626,10 +710,19 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	/* lxc.console */
+	/* REMOVE IN LXC 3.0
+	   legacy lxc.console key
+	 */
 	if (set_get_compare_clear_save_load(c, "lxc.console", "none", tmpf,
 					    true) < 0) {
 		lxc_error("%s\n", "lxc.console");
+		goto non_test_error;
+	}
+
+	/* lxc.console.path */
+	if (set_get_compare_clear_save_load(c, "lxc.console.path", "none", tmpf,
+					    true) < 0) {
+		lxc_error("%s\n", "lxc.console.path");
 		goto non_test_error;
 	}
 
@@ -640,10 +733,19 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	/* lxc.seccomp */
+	/* REMOVE IN LXC 3.0
+	   legacy seccomp key
+	 */
 	if (set_get_compare_clear_save_load(
 		c, "lxc.seccomp", "/some/seccomp/file", tmpf, true) < 0) {
 		lxc_error("%s\n", "lxc.seccomp");
+		goto non_test_error;
+	}
+
+	/* lxc.seccomp.profile */
+	if (set_get_compare_clear_save_load(
+		c, "lxc.seccomp.profile", "/some/seccomp/file", tmpf, true) < 0) {
+		lxc_error("%s\n", "lxc.seccomp.profile");
 		goto non_test_error;
 	}
 
@@ -965,16 +1067,22 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
-	if (set_get_compare_clear_save_load(c, "lxc.net.0.ipv4",
+	if (set_get_compare_clear_save_load(c, "lxc.net.0.ipv4.address",
 					    "10.0.2.3/24", tmpf, true)) {
-		lxc_error("%s\n", "lxc.net.0.ipv4");
+		lxc_error("%s\n", "lxc.net.0.ipv4.address");
 		goto non_test_error;
 	}
 
 	if (set_get_compare_clear_save_load(
-		c, "lxc.net.0.ipv6", "2003:db8:1:0:214:1234:fe0b:3596/64",
+		c, "lxc.net.0.ipv6.address", "2003:db8:1:0:214:1234:fe0b:3596/64",
 		tmpf, true)) {
-		lxc_error("%s\n", "lxc.net.0.ipv6");
+		lxc_error("%s\n", "lxc.net.0.ipv6.address");
+		goto non_test_error;
+	}
+
+	if (set_get_compare_clear_save_load(c, "lxc.cgroup.dir", "lxd", tmpf,
+					    true)) {
+		lxc_error("%s\n", "lxc.cgroup.dir");
 		goto non_test_error;
 	}
 
@@ -983,10 +1091,15 @@ int main(int argc, char *argv[])
 		goto non_test_error;
 	}
 
+	if (set_invalid_netdev(c) < 0) {
+		lxc_error("%s\n", "failed to reject invalid configuration");
+		goto non_test_error;
+	}
+
 	ret = EXIT_SUCCESS;
 non_test_error:
 	(void)unlink(tmpf);
-	c->destroy(c);
+	(void)rmdir(dirname(c->configfile));
 	lxc_container_put(c);
 	exit(ret);
 }

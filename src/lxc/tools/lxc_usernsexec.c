@@ -99,13 +99,13 @@ static void opentty(const char * tty, int which) {
 		close(fd);
 	}
 }
-// Code copy end
+/* Code copy end */
 
 static int do_child(void *vargv)
 {
 	char **argv = (char **)vargv;
 
-	// Assume we want to become root
+	/* Assume we want to become root */
 	if (setgid(0) < 0) {
 		perror("setgid");
 		return -1;
@@ -124,7 +124,7 @@ static int do_child(void *vargv)
 	}
 	if (detect_shared_rootfs()) {
 		if (mount(NULL, "/", NULL, MS_SLAVE|MS_REC, NULL)) {
-			printf("Failed to make / rslave");
+			printf("Failed to make / rslave\n");
 			return -1;
 		}
 	}
@@ -272,8 +272,8 @@ int main(int argc, char *argv[])
 	int pid;
 	char *default_args[] = {"/bin/sh", NULL};
 	char buf[1];
-	int pipe1[2],  // child tells parent it has unshared
-	    pipe2[2];  // parent tells child it is mapped and may proceed
+	int pipe1[2],  /* child tells parent it has unshared */
+	    pipe2[2];  /* parent tells child it is mapped and may proceed */
 
 	memset(ttyname0, '\0', sizeof(ttyname0));
 	memset(ttyname1, '\0', sizeof(ttyname1));
@@ -286,12 +286,12 @@ int main(int argc, char *argv[])
 		}
 		ret = readlink("/proc/self/fd/1", ttyname1, sizeof(ttyname1));
 		if (ret < 0) {
-			printf("Warning: unable to open stdout, continuing.");
+			printf("Warning: unable to open stdout, continuing.\n");
 			memset(ttyname1, '\0', sizeof(ttyname1));
 		}
 		ret = readlink("/proc/self/fd/2", ttyname2, sizeof(ttyname2));
 		if (ret < 0) {
-			printf("Warning: unable to open stderr, continuing.");
+			printf("Warning: unable to open stderr, continuing.\n");
 			memset(ttyname2, '\0', sizeof(ttyname2));
 		}
 	}
@@ -316,17 +316,15 @@ int main(int argc, char *argv[])
 
 	argv = &argv[optind];
 	argc = argc - optind;
-	if (argc < 1) {
+	if (argc < 1)
 		argv = default_args;
-		argc = 1;
-	}
 
 	if (pipe(pipe1) < 0 || pipe(pipe2) < 0) {
 		perror("pipe");
 		exit(EXIT_FAILURE);
 	}
 	if ((pid = fork()) == 0) {
-		// Child.
+		/* Child. */
 
 		close(pipe1[0]);
 		close(pipe2[1]);
@@ -367,10 +365,9 @@ int main(int argc, char *argv[])
 
 	buf[0] = '1';
 
-	if (lxc_map_ids(&active_map, pid)) {
+	if (lxc_map_ids(&active_map, pid))
 		fprintf(stderr, "error mapping child\n");
-		ret = 0;
-	}
+
 	if (write(pipe2[1], buf, 1) < 0) {
 		perror("write to pipe");
 		exit(EXIT_FAILURE);

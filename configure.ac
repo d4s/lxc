@@ -3,12 +3,12 @@
 
 m4_define([lxc_devel], 1)
 m4_define([lxc_version_major], 2)
-m4_define([lxc_version_minor], 0)
+m4_define([lxc_version_minor], 1)
 m4_define([lxc_version_micro], 0)
 m4_define([lxc_version_beta], [])
 
 m4_define([lxc_abi_major], 1)
-m4_define([lxc_abi_minor], 2)
+m4_define([lxc_abi_minor], 3)
 m4_define([lxc_abi_micro], 0)
 m4_define([lxc_abi], [lxc_abi_major.lxc_abi_minor.lxc_abi_micro])
 
@@ -558,7 +558,7 @@ AC_ARG_WITH([cgroup-pattern],
 	[AC_HELP_STRING(
 		[--with-cgroup-pattern=pattern],
 		[pattern for container cgroups]
-	)], [], [with_cgroup_pattern=['/lxc/%n']])
+	)], [], [with_cgroup_pattern=['lxc/%n']])
 
 # Container log path.  By default, use $lxcpath.
 AC_MSG_CHECKING([Whether to place logfiles in container config path])
@@ -671,9 +671,13 @@ AC_CHECK_FUNCS([prlimit],
 	AM_CONDITIONAL(HAVE_PRLIMIT, true)
 	AC_DEFINE(HAVE_PRLIMIT,1,[Have prlimit]),
 	AM_CONDITIONAL(HAVE_PRLIMIT, false))
+AC_CHECK_FUNCS([prlimit64],
+	AM_CONDITIONAL(HAVE_PRLIMIT64, true)
+	AC_DEFINE(HAVE_PRLIMIT64,1,[Have prlimit64]),
+	AM_CONDITIONAL(HAVE_PRLIMIT64, false))
 
 # Check for some libraries
-AC_SEARCH_LIBS(sem_open, [rt pthread])
+AX_PTHREAD
 AC_SEARCH_LIBS(clock_gettime, [rt])
 
 # Check for some standard binaries
@@ -785,6 +789,7 @@ AC_CONFIG_FILES([
 	doc/lxc-top.sgml
 	doc/lxc-unfreeze.sgml
 	doc/lxc-unshare.sgml
+	doc/lxc-update-config.sgml
 	doc/lxc-user-nic.sgml
 	doc/lxc-usernsexec.sgml
 	doc/lxc-wait.sgml
@@ -833,6 +838,7 @@ AC_CONFIG_FILES([
 	doc/ja/lxc-top.sgml
 	doc/ja/lxc-unfreeze.sgml
 	doc/ja/lxc-unshare.sgml
+	doc/ja/lxc-update-config.sgml
 	doc/ja/lxc-user-nic.sgml
 	doc/ja/lxc-usernsexec.sgml
 	doc/ja/lxc-wait.sgml
@@ -883,6 +889,8 @@ AC_CONFIG_FILES([
 	doc/ko/see_also.sgml
 
 	hooks/Makefile
+	hooks/dhclient-start
+	hooks/dhclient-stop
 
 	templates/Makefile
 	templates/lxc-alpine
@@ -896,6 +904,7 @@ AC_CONFIG_FILES([
 	templates/lxc-fedora
 	templates/lxc-fedora-legacy
 	templates/lxc-gentoo
+	templates/lxc-oci
 	templates/lxc-openmandriva
 	templates/lxc-opensuse
 	templates/lxc-oracle
@@ -914,6 +923,7 @@ AC_CONFIG_FILES([
 	src/lxc/lxc.functions
 	src/lxc/tools/lxc-checkconfig
 	src/lxc/tools/lxc-start-ephemeral
+	src/lxc/tools/lxc-update-config
 	src/lxc/version.h
 	src/python-lxc/Makefile
 

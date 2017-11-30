@@ -41,7 +41,6 @@
 #include <dirent.h>
 #include <syslog.h>
 
-#include "bdev.h"
 #include "parse.h"
 #include "config.h"
 #include "confile.h"
@@ -52,6 +51,7 @@
 #include "conf.h"
 #include "network.h"
 #include "lxcseccomp.h"
+#include "storage.h"
 
 #if HAVE_IFADDRS_H
 #include <ifaddrs.h>
@@ -90,8 +90,12 @@ int set_config_network_legacy_nic(const char *key, const char *value,
 	if (!p)
 		goto out;
 
+	if (strlen(p + 1) == 0) {
+	    ERROR("No subkey in network configuration key \"%s\"", key);
+	    goto out;
+	}
 	strcpy(copy + 12, p + 1);
-	config = lxc_getconfig(copy);
+	config = lxc_get_config(copy);
 	if (!config) {
 		ERROR("unknown key %s", key);
 		goto out;
@@ -110,10 +114,6 @@ static void lxc_remove_nic(struct lxc_list *it)
 
 	lxc_list_del(it);
 
-	free(netdev->link);
-	free(netdev->name);
-	if (netdev->type == LXC_NET_VETH)
-		free(netdev->priv.veth_attr.pair);
 	free(netdev->upscript);
 	free(netdev->downscript);
 	free(netdev->hwaddr);
@@ -423,7 +423,7 @@ int set_config_network_legacy_link(const char *key, const char *value,
 		free(it);
 		ret = create_matched_ifnames(value, lxc_conf, NULL);
 	} else {
-		ret = network_ifname(&netdev->link, value);
+		ret = network_ifname(netdev->link, value);
 	}
 
 	return ret;
@@ -438,7 +438,7 @@ int set_config_network_legacy_name(const char *key, const char *value,
 	if (!netdev)
 		return -1;
 
-	return network_ifname(&netdev->name, value);
+	return network_ifname(netdev->name, value);
 }
 
 int set_config_network_legacy_veth_pair(const char *key, const char *value,
@@ -455,7 +455,7 @@ int set_config_network_legacy_veth_pair(const char *key, const char *value,
 		return -1;
 	}
 
-	return network_ifname(&netdev->priv.veth_attr.pair, value);
+	return network_ifname(netdev->priv.veth_attr.pair, value);
 }
 
 int set_config_network_legacy_macvlan_mode(const char *key, const char *value,
@@ -848,12 +848,12 @@ int get_config_network_legacy_item(const char *key, char *retv, int inlen,
 	if (!netdev)
 		return -1;
 	if (strcmp(p1, "name") == 0) {
-		if (netdev->name)
+		if (netdev->name[0] != '\0')
 			strprint(retv, inlen, "%s", netdev->name);
 	} else if (strcmp(p1, "type") == 0) {
 		strprint(retv, inlen, "%s", lxc_net_type_to_str(netdev->type));
 	} else if (strcmp(p1, "link") == 0) {
-		if (netdev->link)
+		if (netdev->link[0] != '\0')
 			strprint(retv, inlen, "%s", netdev->link);
 	} else if (strcmp(p1, "flags") == 0) {
 		if (netdev->flags & IFF_UP)
@@ -895,7 +895,7 @@ int get_config_network_legacy_item(const char *key, char *retv, int inlen,
 	} else if (strcmp(p1, "veth.pair") == 0) {
 		if (netdev->type == LXC_NET_VETH) {
 			strprint(retv, inlen, "%s",
-				 netdev->priv.veth_attr.pair
+				 netdev->priv.veth_attr.pair[0] != '\0'
 				     ? netdev->priv.veth_attr.pair
 				     : netdev->priv.veth_attr.veth1);
 		}
@@ -918,7 +918,7 @@ int get_config_network_legacy_item(const char *key, char *retv, int inlen,
 			struct lxc_inetdev *i = it2->elem;
 			char buf[INET_ADDRSTRLEN];
 			inet_ntop(AF_INET, &i->addr, buf, sizeof(buf));
-			strprint(retv, inlen, "%s/%d\n", buf, i->prefix);
+			strprint(retv, inlen, "%s/%u\n", buf, i->prefix);
 		}
 	} else if (strcmp(p1, "ipv6.gateway") == 0) {
 		if (netdev->ipv6_gateway_auto) {
@@ -935,7 +935,7 @@ int get_config_network_legacy_item(const char *key, char *retv, int inlen,
 			struct lxc_inet6dev *i = it2->elem;
 			char buf[INET6_ADDRSTRLEN];
 			inet_ntop(AF_INET6, &i->addr, buf, sizeof(buf));
-			strprint(retv, inlen, "%s/%d\n", buf, i->prefix);
+			strprint(retv, inlen, "%s/%u\n", buf, i->prefix);
 		}
 	}
 	return fulllen;
@@ -1085,7 +1085,7 @@ extern int set_config_limit(const char *key, const char *value,
 {
 	struct lxc_list *iter;
 	struct rlimit limit;
-	unsigned long limit_value;
+	rlim_t limit_value;
 	struct lxc_list *limlist = NULL;
 	struct lxc_limit *limelem = NULL;
 

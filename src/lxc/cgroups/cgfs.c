@@ -39,7 +39,6 @@
 #include <netinet/in.h>
 #include <net/if.h>
 
-#include "bdev.h"
 #include "error.h"
 #include "commands.h"
 #include "list.h"
@@ -49,6 +48,7 @@
 #include "cgroup.h"
 #include "start.h"
 #include "state.h"
+#include "storage.h"
 
 #if IS_BIONIC
 #include <../include/lxcmntent.h>
@@ -791,7 +791,7 @@ static char *cgroup_rename_nsgroup(const char *mountpath, const char *oldname, p
 
 	len = strlen(oldname) + strlen(mountpath) + 22;
 	fulloldpath = alloca(len);
-	ret = snprintf(fulloldpath, len, "%s/%s/%ld", mountpath, oldname, (unsigned long)pid);
+	ret = snprintf(fulloldpath, len, "%s/%s/%lu", mountpath, oldname, (unsigned long)pid);
 	if (ret < 0 || ret >= len)
 		return NULL;
 
@@ -1418,11 +1418,12 @@ static bool cgroupfs_mount_cgroup(void *hdata, const char *root, int type)
 	struct cgfs_data *cgfs_d;
 	struct cgroup_process_info *info, *base_info;
 	int r, saved_errno = 0;
+	struct lxc_handler *handler = hdata;
 
 	if (cgns_supported())
 		return true;
 
-	cgfs_d = hdata;
+	cgfs_d = handler->cgroup_data;
 	if (!cgfs_d)
 		return false;
 	base_info = cgfs_d->info;
@@ -1800,7 +1801,9 @@ static char **subsystems_from_mount_options(const char *mount_options,
 			goto out_free;
 		result[result_count + 1] = NULL;
 		if (strncmp(token, "name=", 5) && !lxc_string_in_array(token, (const char **)kernel_list)) {
-			// this is eg 'systemd' but the mount will be 'name=systemd'
+			/* this is eg 'systemd' but the mount will be
+			 * 'name=systemd'
+			 */
 			result[result_count] = malloc(strlen(token) + 6);
 			if (result[result_count])
 				sprintf(result[result_count], "name=%s", token);
@@ -2068,9 +2071,10 @@ static bool cgroup_devices_has_allow_or_deny(struct cgfs_data *d,
 		NULL
 	};
 
-	// XXX FIXME if users could use something other than 'lxc.devices.deny = a'.
-	// not sure they ever do, but they *could*
-	// right now, I'm assuming they do NOT
+	/* XXX FIXME if users could use something other than 'lxc.devices.deny =
+	 * a'.  not sure they ever do, but they *could* right now, I'm assuming
+	 * they do NOT
+	 */
 	if (!for_allow && strcmp(v, "a") != 0 && strcmp(v, "a *:* rwm") != 0)
 		return false;
 
@@ -2340,7 +2344,7 @@ struct cgroup_ops *cgfs_ops_init(void)
 	return &cgfs_ops;
 }
 
-static void *cgfs_init(const char *name)
+static void *cgfs_init(struct lxc_handler *handler)
 {
 	struct cgfs_data *d;
 
@@ -2349,7 +2353,7 @@ static void *cgfs_init(const char *name)
 		return NULL;
 
 	memset(d, 0, sizeof(*d));
-	d->name = strdup(name);
+	d->name = strdup(handler->name);
 	if (!d->name)
 		goto err1;
 

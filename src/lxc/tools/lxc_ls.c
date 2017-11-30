@@ -41,8 +41,6 @@
 #include "lxc.h"
 #include "utils.h"
 
-lxc_log_define(lxc_ls, lxc);
-
 /* Per default we only allow five levels of recursion to protect the stack at
  * least a little bit. */
 #define MAX_NESTLVL 5
@@ -53,6 +51,7 @@ lxc_log_define(lxc_ls, lxc);
 #define LS_RUNNING 4
 #define LS_NESTING 5
 #define LS_FILTER 6
+#define LS_DEFINED 7
 
 #ifndef SOCK_CLOEXEC
 #  define SOCK_CLOEXEC                02000000
@@ -167,6 +166,7 @@ static const struct option my_longopts[] = {
 	{"running", no_argument, 0, LS_RUNNING},
 	{"frozen", no_argument, 0, LS_FROZEN},
 	{"stopped", no_argument, 0, LS_STOPPED},
+	{"defined", no_argument, 0, LS_DEFINED},
 	{"nesting", optional_argument, 0, LS_NESTING},
 	{"groups", required_argument, 0, 'g'},
 	{"filter", required_argument, 0, LS_FILTER},
@@ -192,6 +192,7 @@ Options :\n\
   --running          list only running containers\n\
   --frozen           list only frozen containers\n\
   --stopped          list only stopped containers\n\
+  --defined          list only defined containers\n\
   --nesting=NUM      list nested containers up to NUM (default is 5) levels of nesting\n\
   --filter=REGEX     filter container names by regular expression\n\
   -g --groups        comma separated list of groups a container must have to be displayed\n",
@@ -229,6 +230,9 @@ int main(int argc, char *argv[])
 	if (lxc_log_init(&log))
 		exit(EXIT_FAILURE);
 	lxc_log_options_no_override();
+
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
 
 	struct lengths max_len = {
 		/* default header length */
@@ -402,8 +406,9 @@ static int ls_get(struct ls **m, size_t *size, const struct lxc_arguments *args,
  		else if (!c)
  			continue;
 
-		if (!c->is_defined(c))
+		if (args->ls_defined && !c->is_defined(c)){
 			goto put_and_next;
+		}
 
 		/* This does not allocate memory so no worries about freeing it
 		 * when we goto next or out. */
@@ -468,9 +473,9 @@ static int ls_get(struct ls **m, size_t *size, const struct lxc_arguments *args,
 			if (tmp) {
 				unsigned int astart = 0;
 				if (lxc_safe_uint(tmp, &astart) < 0)
-					WARN("Could not parse value for 'lxc.start.auto'.");
+					printf("Could not parse value for 'lxc.start.auto'.\n");
 				if (astart > 1)
-					DEBUG("Wrong value for 'lxc.start.auto = %d'.", astart);
+					printf("Wrong value for 'lxc.start.auto = %d'.\n", astart);
 				l->autostart = astart == 1 ? true : false;
 			}
 			free(tmp);
@@ -542,7 +547,12 @@ static int ls_get(struct ls **m, size_t *size, const struct lxc_arguments *args,
 			 * need a path-extractor function. We face the same
 			 * problem with the ovl_mkdir() function in
 			 * lxcoverlay.{c,h}. */
-			char *curr_path = ls_get_config_item(c, "lxc.rootfs", running);
+			char *curr_path = ls_get_config_item(c, "lxc.rootfs.path", running);
+			/* REMOVE IN LXC 3.0
+			   legacy rootfs key
+			   */
+			if (!curr_path)
+				curr_path = ls_get_config_item(c, "lxc.rootfs", running);
 			if (!curr_path)
 				goto put_and_next;
 
@@ -668,18 +678,22 @@ static char *ls_get_interface(struct lxc_container *c)
  */
 static double ls_get_swap(struct lxc_container *c)
 {
+	char *stat, *swap, *tmp;
 	unsigned long long int num = 0;
-	char *stat = ls_get_cgroup_item(c, "memory.stat");
+
+	stat = ls_get_cgroup_item(c, "memory.stat");
 	if (!stat)
 		goto out;
 
-	char *swap = strstr(stat, "\nswap");
+	swap = strstr(stat, "\nswap");
 	if (!swap)
 		goto out;
 
-	swap = 1 + swap + 4 + 1; // start_of_swap_value = '\n' + strlen(swap) + ' '
+	/* start_of_swap_value = '\n' + strlen(swap) + ' ' */
+	swap = 1 + swap + 4 + 1;
 
-	char *tmp = strchr(swap, '\n'); // find end of swap value
+	/* find end of swap value */
+	tmp = strchr(swap, '\n');
 	if (!tmp)
 		goto out;
 
@@ -934,6 +948,9 @@ static int my_parser(struct lxc_arguments *args, int c, char *arg)
 		break;
 	case LS_STOPPED:
 		args->ls_stopped = true;
+		break;
+	case LS_DEFINED:
+		args->ls_defined = true;
 		break;
 	case LS_NESTING:
 		/* In case strtoul() receives a string that represents a

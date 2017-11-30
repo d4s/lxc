@@ -38,12 +38,9 @@ lxc_log_define(lxc_af_unix, lxc);
 
 int lxc_abstract_unix_open(const char *path, int type, int flags)
 {
-	int fd;
+	int fd, ret;
 	size_t len;
 	struct sockaddr_un addr;
-
-	if (flags & O_TRUNC)
-		unlink(path);
 
 	fd = socket(PF_UNIX, type, 0);
 	if (fd < 0)
@@ -67,18 +64,24 @@ int lxc_abstract_unix_open(const char *path, int type, int flags)
 	/* addr.sun_path[0] has already been set to 0 by memset() */
 	strncpy(&addr.sun_path[1], &path[1], strlen(&path[1]));
 
-	if (bind(fd, (struct sockaddr *)&addr, offsetof(struct sockaddr_un, sun_path) + len + 1)) {
+	ret = bind(fd, (struct sockaddr *)&addr,
+		   offsetof(struct sockaddr_un, sun_path) + len + 1);
+	if (ret < 0) {
 		int tmp = errno;
 		close(fd);
 		errno = tmp;
 		return -1;
 	}
 
-	if (type == SOCK_STREAM && listen(fd, 100)) {
-		int tmp = errno;
-		close(fd);
-		errno = tmp;
-		return -1;
+	if (type == SOCK_STREAM) {
+		ret = listen(fd, 100);
+		if (ret < 0) {
+			int tmp = errno;
+			close(fd);
+			errno = tmp;
+			return -1;
+		}
+
 	}
 
 	return fd;
@@ -86,21 +89,13 @@ int lxc_abstract_unix_open(const char *path, int type, int flags)
 
 int lxc_abstract_unix_close(int fd)
 {
-	struct sockaddr_un addr;
-	socklen_t addrlen = sizeof(addr);
-
-	if (!getsockname(fd, (struct sockaddr *)&addr, &addrlen) &&
-			addr.sun_path[0])
-		unlink(addr.sun_path);
-
 	close(fd);
-
 	return 0;
 }
 
 int lxc_abstract_unix_connect(const char *path)
 {
-	int fd;
+	int fd, ret;
 	size_t len;
 	struct sockaddr_un addr;
 
@@ -122,13 +117,10 @@ int lxc_abstract_unix_connect(const char *path)
 	/* addr.sun_path[0] has already been set to 0 by memset() */
 	strncpy(&addr.sun_path[1], &path[1], strlen(&path[1]));
 
-	if (connect(fd, (struct sockaddr *)&addr, offsetof(struct sockaddr_un, sun_path) + len + 1)) {
-		int tmp = errno;
-		/* special case to connect to older containers */
-		if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0)
-			return fd;
+	ret = connect(fd, (struct sockaddr *)&addr,
+		      offsetof(struct sockaddr_un, sun_path) + len + 1);
+	if (ret < 0) {
 		close(fd);
-		errno = tmp;
 		return -1;
 	}
 
@@ -220,13 +212,11 @@ out:
 
 int lxc_abstract_unix_send_credential(int fd, void *data, size_t size)
 {
-	struct msghdr msg = { 0 };
+	struct msghdr msg = {0};
 	struct iovec iov;
 	struct cmsghdr *cmsg;
 	struct ucred cred = {
-		.pid = getpid(),
-		.uid = getuid(),
-		.gid = getgid(),
+	    .pid = getpid(), .uid = getuid(), .gid = getgid(),
 	};
 	char cmsgbuf[CMSG_SPACE(sizeof(cred))] = {0};
 	char buf[1] = {0};
@@ -253,7 +243,7 @@ int lxc_abstract_unix_send_credential(int fd, void *data, size_t size)
 
 int lxc_abstract_unix_rcv_credential(int fd, void *data, size_t size)
 {
-	struct msghdr msg = { 0 };
+	struct msghdr msg = {0};
 	struct iovec iov;
 	struct cmsghdr *cmsg;
 	struct ucred cred;
@@ -278,10 +268,11 @@ int lxc_abstract_unix_rcv_credential(int fd, void *data, size_t size)
 	cmsg = CMSG_FIRSTHDR(&msg);
 
 	if (cmsg && cmsg->cmsg_len == CMSG_LEN(sizeof(struct ucred)) &&
-			cmsg->cmsg_level == SOL_SOCKET &&
-			cmsg->cmsg_type == SCM_CREDENTIALS) {
+	    cmsg->cmsg_level == SOL_SOCKET &&
+	    cmsg->cmsg_type == SCM_CREDENTIALS) {
 		memcpy(&cred, CMSG_DATA(cmsg), sizeof(cred));
-		if (cred.uid && (cred.uid != getuid() || cred.gid != getgid())) {
+		if (cred.uid &&
+		    (cred.uid != getuid() || cred.gid != getgid())) {
 			INFO("message denied for '%d/%d'", cred.uid, cred.gid);
 			return -EACCES;
 		}

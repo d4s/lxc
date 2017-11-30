@@ -86,7 +86,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       example, a process running as UID and GID 0 inside the container might
       appear as UID and GID 100000 on the host.  The implementation and working
       details can be gathered from the corresponding user namespace man page.
-      UID and GID mappings can be defined with the <option>lxc.id_map</option>
+      UID and GID mappings can be defined with the <option>lxc.idmap</option>
       key.
     </para>
 
@@ -102,7 +102,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       LXC namespaces configuration keys by using single dots. This means complex
       configuration keys such as <option>lxc.net.0</option> expose various
       subkeys such as <option>lxc.net.0.type</option>,
-      <option>lxc.net.0.link</option>, <option>lxc.net.0.ipv6</option>, and
+      <option>lxc.net.0.link</option>, <option>lxc.net.0.ipv6.address</option>, and
       others for even more fine-grained configuration.
     </para>
 
@@ -255,11 +255,20 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <title>Init command</title>
       <para>
         Sets the command to use as the init system for the containers.
-
-        This option is ignored when using lxc-execute.
-
-        Defaults to: /sbin/init
       </para>
+      <variablelist>
+        <varlistentry>
+          <term>
+            <option>lxc.execute.cmd</option>
+          </term>
+          <listitem>
+            <para>
+              Absolute path from container rootfs to the binary to run by default.  This
+	      mostly makes sense for <command>lxc-execute</command>.
+            </para>
+          </listitem>
+        </varlistentry>
+      </variablelist>
       <variablelist>
         <varlistentry>
           <term>
@@ -267,7 +276,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
           </term>
           <listitem>
             <para>
-              Absolute path from container rootfs to the binary to use as init.
+              Absolute path from container rootfs to the binary to use as init. This
+	      mostly makes sense for <command>lxc-start</command>. Default is <command>/sbin/init</command>.
             </para>
           </listitem>
         </varlistentry>
@@ -523,7 +533,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
         <varlistentry>
           <term>
-            <option>lxc.net.[i].ipv4</option>
+            <option>lxc.net.[i].ipv4.address</option>
           </term>
           <listitem>
             <para>
@@ -557,7 +567,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
         <varlistentry>
           <term>
-            <option>lxc.net.[i].ipv6</option>
+            <option>lxc.net.[i].ipv6.address</option>
           </term>
           <listitem>
             <para>
@@ -650,7 +660,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.pts</option>
+            <option>lxc.pty.max</option>
           </term>
           <listitem>
             <para>
@@ -672,20 +682,91 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
         where the output of this console goes.
       </para>
       <variablelist>
+
+        <varlistentry>
+          <term>
+            <option>lxc.console.buffer.size</option>
+          </term>
+          <listitem>
+            <para>
+            Setting this option instructs liblxc to allocate an in-memory
+            ringbuffer. The container's console output will be written to the
+            ringbuffer. Note that ringbuffer must be at least as big as a
+            standard page size. When passed a value smaller than a single page
+            size liblxc will allocate a ringbuffer of a single page size. A page
+            size is usually 4kB.
+
+            The keyword 'auto' will cause liblxc to allocate a ringbuffer of
+            128kB.
+
+            When manually specifying a size for the ringbuffer the value should
+            be a power of 2 when converted to bytes. Valid size prefixes are
+            'kB', 'MB', 'GB'. (Note that all conversions are based on multiples
+            of 1024. That means 'kb' == 'KiB', 'MB' == 'MiB', 'GB' == 'GiB'.)
+            </para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term>
+            <option>lxc.console.buffer.logfile</option>
+          </term>
+          <listitem>
+            <para>
+            Setting this option instructs liblxc to write the in-memory
+            ringbuffer to disk. For performance reasons liblxc will only write
+            the in-memory ringbuffer to disk when requested. Note that the this
+            option is only used by liblxc when
+            <option>lxc.console.buffer.size</option> is set.
+
+            By default liblxc will dump the contents of the in-memory ringbuffer
+            to disk when the container terminates. This allows users to diagnose
+            boot failures when the container crashed before an API request to
+            retrieve the in-memory ringbuffer could be sent or handled.
+            </para>
+          </listitem>
+        </varlistentry>
+
         <varlistentry>
           <term>
             <option>lxc.console.logfile</option>
           </term>
           <listitem>
             <para>
-              Specify a path to a file where the console output will
-              be written.
+              Specify a path to a file where the console output will be written.
+              Note that in contrast to the on-disk ringbuffer logfile this file
+              will keep growing potentially filling up the users disks if not
+              rotated and deleted. This problem can also be avoided by using the
+              in-memory ringbuffer options
+              <option>lxc.console.buffer.size</option> and
+              <option>lxc.console.buffer.logfile</option>.
             </para>
           </listitem>
         </varlistentry>
+
         <varlistentry>
           <term>
-            <option>lxc.console</option>
+            <option>lxc.console.rotate</option>
+          </term>
+          <listitem>
+            <para>
+              Whether to rotate the console logfile specified in
+              <option>lxc.console.logfile</option>. Users can send an API
+              request to rotate the logfile. Note that the old logfile will have
+              the same name as the original with the suffix ".1" appended.
+
+              Users wishing to prevent the console log file from filling the
+              disk should rotate the logfile and delete it if unneeded. This
+              problem can also be avoided by using the in-memory ringbuffer
+              options <option>lxc.console.buffer.size</option> and
+              <option>lxc.console.buffer.logfile</option>.
+            </para>
+          </listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term>
+            <option>lxc.console.path</option>
           </term>
           <listitem>
             <para>
@@ -718,7 +799,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.tty</option>
+            <option>lxc.tty.max</option>
           </term>
           <listitem>
             <para>
@@ -747,7 +828,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.devttydir</option>
+            <option>lxc.tty.dir</option>
           </term>
           <listitem>
             <para>
@@ -815,7 +896,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.mount</option>
+            <option>lxc.mount.fstab</option>
           </term>
           <listitem>
             <para>
@@ -1042,7 +1123,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.rootfs</option>
+            <option>lxc.rootfs.path</option>
           </term>
           <listitem>
             <para>
@@ -1076,7 +1157,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
           </term>
           <listitem>
             <para>
-              where to recursively bind <option>lxc.rootfs</option>
+              where to recursively bind <option>lxc.rootfs.path</option>
               before pivoting.  This is to ensure success of the
               <citerefentry>
                 <refentrytitle><command>pivot_root</command></refentrytitle>
@@ -1095,20 +1176,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
           <listitem>
             <para>
               extra mount options to use when mounting the rootfs.
-            </para>
-          </listitem>
-        </varlistentry>
-
-        <varlistentry>
-          <term>
-            <option>lxc.rootfs.backend</option>
-          </term>
-          <listitem>
-            <para>
-              specify the rootfs backend type to use, for instance 'dir' or
-	      'zfs'.  While this can be guessed by lxc at container startup,
-	      doing so takes time.  Specifying it here avoids extra
-	      processing.
             </para>
           </listitem>
         </varlistentry>
@@ -1140,6 +1207,25 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
               features of the Linux kernel running at the time the
               container is started,
               eg. <option>lxc.cgroup.cpuset.cpus</option>
+            </para>
+          </listitem>
+        </varlistentry>
+        <varlistentry>
+          <term>
+            <option>lxc.cgroup.dir</option>
+          </term>
+          <listitem>
+            <para>
+              specify a directory or path in which the container's cgroup will
+              be created. For example, setting
+              <option>lxc.cgroup.dir = my-cgroup/first</option> for a container
+              named "c1" will create the container's cgroup as a sub-cgroup of
+              "my-cgroup". For example, if the user's current cgroup "my-user"
+              is located in the root cgroup of the cpuset controller in a
+              cgroup v1 hierarchy this would create the cgroup
+              "/sys/fs/cgroup/cpuset/my-user/my-cgroup/first/c1" for the
+              container. Any missing cgroups will be created by LXC. This
+              presupposes that the user has write access to its current cgroup.
             </para>
           </listitem>
         </varlistentry>
@@ -1185,6 +1271,65 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
               encountered, lxc will clear any keep capabilities specified up
               to this point. A value of "none" alone can be used to drop all
               capabilities.
+            </para>
+          </listitem>
+        </varlistentry>
+      </variablelist>
+    </refsect2>
+
+    <refsect2>
+      <title>Namespace Inheritance</title>
+      <para>
+        The capabilities can be dropped in the container if this one
+        is run as root.
+      </para>
+      <variablelist>
+        <varlistentry>
+          <term>
+            <option>lxc.namespace.[namespace identifier]</option>
+          </term>
+          <listitem>
+            <para>
+            Specify a namespace to inherit from another container or process.
+            The <option>[namespace identifier]</option> suffix needs to be
+            replaced with one of the namespaces that appear in the
+            <filename>/proc/PID/ns</filename> directory.
+            </para>
+
+            <para>
+            To inherit the namespace from another process set the
+            <option>lxc.namespace.[namespace identifier]</option> to the PID of
+            the process, e.g. <option>lxc.namespace.net=42</option>.
+            </para>
+
+            <para>
+            To inherit the namespace from another container set the 
+            <option>lxc.namespace.[namespace identifier]</option> to the name of
+            the container, e.g. <option>lxc.namespace.pid=c3</option>.
+            </para>
+
+            <para>
+            To inherit the namespace from another container located in a
+            different path than the standard liblxc path set the
+            <option>lxc.namespace.[namespace identifier]</option> to the full
+            path to the container, e.g.
+            <option>lxc.namespace.user=/opt/c3</option>.
+            </para>
+
+            <para>
+            In order to inherit namespaces the caller needs to have sufficient
+            privilege over the process or container.
+            </para>
+
+            <para>
+            Note that sharing pid namespaces between system containers will
+            likely not work with most init systems.
+            </para>
+
+            <para>
+            Note that if two processes are in different user namespaces and one
+            process wants to inherit the other's network namespace it usually
+            needs to inherit the user namespace as well.
             </para>
           </listitem>
         </varlistentry>
@@ -1238,7 +1383,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.aa_profile</option>
+            <option>lxc.apparmor.profile</option>
           </term>
           <listitem>
             <para>
@@ -1246,17 +1391,17 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
               be run.  To specify that the container should be unconfined,
               use
             </para>
-              <programlisting>lxc.aa_profile = unconfined</programlisting>
+              <programlisting>lxc.apparmor.profile = unconfined</programlisting>
             <para>
               If the apparmor profile should remain unchanged (i.e. if you
 	      are nesting containers and are already confined), then use
             </para>
-              <programlisting>lxc.aa_profile = unchanged</programlisting>
+              <programlisting>lxc.apparmor.profile = unchanged</programlisting>
           </listitem>
         </varlistentry>
         <varlistentry>
           <term>
-            <option>lxc.aa_allow_incomplete</option>
+            <option>lxc.apparmor.allow_incomplete</option>
           </term>
           <listitem>
             <para>
@@ -1292,14 +1437,14 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.se_context</option>
+            <option>lxc.selinux.context</option>
           </term>
           <listitem>
             <para>
               Specify the SELinux context under which the container should
               be run or <command>unconfined_t</command>. For example
             </para>
-            <programlisting>lxc.se_context = system_u:system_r:lxc_t:s0:c22</programlisting>
+            <programlisting>lxc.selinux.context = system_u:system_r:lxc_t:s0:c22</programlisting>
           </listitem>
         </varlistentry>
       </variablelist>
@@ -1342,7 +1487,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.seccomp</option>
+            <option>lxc.seccomp.profile</option>
           </term>
           <listitem>
             <para>
@@ -1397,7 +1542,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
       <variablelist>
         <varlistentry>
           <term>
-            <option>lxc.id_map</option>
+            <option>lxc.idmap</option>
           </term>
           <listitem>
             <para>
@@ -1440,7 +1585,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
           <listitem><para> LXC_ROOTFS_MOUNT: the path to the mounted root filesystem. </para></listitem>
           <listitem><para> LXC_CONFIG_FILE: the path to the container configuration file. </para></listitem>
           <listitem><para> LXC_SRC_NAME: in the case of the clone hook, this is the original container's name. </para></listitem>
-          <listitem><para> LXC_ROOTFS_PATH: this is the lxc.rootfs entry for the container.  Note this is likely not where the mounted rootfs is to be found, use LXC_ROOTFS_MOUNT for that. </para></listitem>
+          <listitem><para> LXC_ROOTFS_PATH: this is the lxc.rootfs.path entry for the container.  Note this is likely not where the mounted rootfs is to be found, use LXC_ROOTFS_MOUNT for that. </para></listitem>
+          <listitem><para> LXC_CGNS_AWARE: indicated whether the container is cgroup namespace aware.  </para></listitem>
+          <listitem><para> LXC_LOG_LEVEL: the container's log level.  </para></listitem>
         </itemizedlist>
       </para>
       <para>
@@ -1508,6 +1655,20 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
               directory is relative to the
               ${<option>LXC_ROOTFS_MOUNT</option>} environment
               variable available when the hook is run.
+            </para>
+          </listitem>
+        </varlistentry>
+      </variablelist>
+      <variablelist>
+        <varlistentry>
+          <term>
+            <option>lxc.hook.start-host</option>
+          </term>
+          <listitem>
+            <para>
+              A hook to be run in the host's namespace after the
+              container has been setup, and immediately before starting
+	      the container init.
             </para>
           </listitem>
         </varlistentry>
@@ -1633,7 +1794,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
           <listitem>
             <para>
               The path to the console output of the container if not NULL.
-              [<option>-c</option>] [<option>lxc.console</option>]
+              [<option>-c</option>] [<option>lxc.console.path</option>]
             </para>
           </listitem>
         </varlistentry>
@@ -1676,7 +1837,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
             <para>
               The host relative path to the container root which has been
               mounted to the rootfs.mount location.
-              [<option>lxc.rootfs</option>]
+              [<option>lxc.rootfs.path</option>]
             </para>
           </listitem>
         </varlistentry>
@@ -1938,8 +2099,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
         lxc.net.0.link = br0
         lxc.net.0.name = eth0
         lxc.net.0.hwaddr = 4a:49:43:49:79:bf
-        lxc.net.0.ipv4 = 10.2.3.5/24 10.2.3.255
-        lxc.net.0.ipv6 = 2003:db8:1:0:214:1234:fe0b:3597
+        lxc.net.0.ipv4.address = 10.2.3.5/24 10.2.3.255
+        lxc.net.0.ipv6.address = 2003:db8:1:0:214:1234:fe0b:3597
       </programlisting>
     </refsect2>
 
@@ -1949,8 +2110,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
         range 0-9999 in the container to the ids 100000-109999 on the host.
       </para>
       <programlisting>
-        lxc.id_map = u 0 100000 10000
-        lxc.id_map = g 0 100000 10000
+        lxc.idmap = u 0 100000 10000
+        lxc.idmap = g 0 100000 10000
       </programlisting>
     </refsect2>
 
@@ -1980,30 +2141,30 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
         lxc.net.0.flags = up
         lxc.net.0.link = br0
         lxc.net.0.hwaddr = 4a:49:43:49:79:bf
-        lxc.net.0.ipv4 = 10.2.3.5/24 10.2.3.255
-        lxc.net.0.ipv6 = 2003:db8:1:0:214:1234:fe0b:3597
-        lxc.net.0.ipv6 = 2003:db8:1:0:214:5432:feab:3588
+        lxc.net.0.ipv4.address = 10.2.3.5/24 10.2.3.255
+        lxc.net.0.ipv6.address = 2003:db8:1:0:214:1234:fe0b:3597
+        lxc.net.0.ipv6.address = 2003:db8:1:0:214:5432:feab:3588
         lxc.net.1.type = macvlan
         lxc.net.1.flags = up
         lxc.net.1.link = eth0
         lxc.net.1.hwaddr = 4a:49:43:49:79:bd
-        lxc.net.1.ipv4 = 10.2.3.4/24
-        lxc.net.1.ipv4 = 192.168.10.125/24
-        lxc.net.1.ipv6 = 2003:db8:1:0:214:1234:fe0b:3596
+        lxc.net.1.ipv4.address = 10.2.3.4/24
+        lxc.net.1.ipv4.address = 192.168.10.125/24
+        lxc.net.1.ipv6.address = 2003:db8:1:0:214:1234:fe0b:3596
         lxc.net.2.type = phys
         lxc.net.2.flags = up
         lxc.net.2.link = dummy0
         lxc.net.2.hwaddr = 4a:49:43:49:79:ff
-        lxc.net.2.ipv4 = 10.2.3.6/24
-        lxc.net.2.ipv6 = 2003:db8:1:0:214:1234:fe0b:3297
+        lxc.net.2.ipv4.address = 10.2.3.6/24
+        lxc.net.2.ipv6.address = 2003:db8:1:0:214:1234:fe0b:3297
         lxc.cgroup.cpuset.cpus = 0,1
         lxc.cgroup.cpu.shares = 1234
         lxc.cgroup.devices.deny = a
         lxc.cgroup.devices.allow = c 1:3 rw
         lxc.cgroup.devices.allow = b 8:0 rw
-        lxc.mount = /etc/fstab.complex
+        lxc.mount.fstab = /etc/fstab.complex
         lxc.mount.entry = /lib /root/myrootfs/lib none ro,bind 0 0
-        lxc.rootfs = /mnt/rootfs.complex
+        lxc.rootfs.path = dir:/mnt/rootfs.complex
         lxc.cap.drop = sys_module mknod setuid net_raw
         lxc.cap.drop = mac_override
       </programlisting>

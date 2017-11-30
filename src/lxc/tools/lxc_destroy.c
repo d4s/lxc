@@ -32,8 +32,6 @@
 #include "lxc.h"
 #include "utils.h"
 
-lxc_log_define(lxc_destroy_ui, lxc);
-
 static int my_parser(struct lxc_arguments* args, int c, char* arg);
 static bool quiet;
 
@@ -88,6 +86,9 @@ int main(int argc, char *argv[])
 	lxc_log_options_no_override();
 	if (my_args.quiet)
 		quiet = true;
+
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
 
 	c = lxc_container_new(my_args.name, my_args.lxcpath[0]);
 	if (!c) {
@@ -171,7 +172,7 @@ static bool do_destroy(struct lxc_container *c)
 	if (ret < 0 || ret >= MAXPATHLEN)
 		return false;
 
-	if (dir_exists(path)) {
+	if (rmdir(path) < 0 && errno != ENOENT) {
 		if (!quiet)
 			fprintf(stdout, "Destroying %s failed: %s has snapshots.\n", c->name, c->name);
 		return false;
@@ -230,14 +231,14 @@ static bool do_destroy_with_snapshots(struct lxc_container *c)
 		/* Make sure that the string is \0 terminated. */
 		buf = calloc(fbuf.st_size + 1, sizeof(char));
 		if (!buf) {
-			SYSERROR("failed to allocate memory");
+			fprintf(stderr, "failed to allocate memory\n");
 			close(fd);
 			return false;
 		}
 
 		ret = read(fd, buf, fbuf.st_size);
 		if (ret < 0) {
-			ERROR("could not read %s", path);
+			fprintf(stderr, "could not read %s\n", path);
 			close(fd);
 			free(buf);
 			return false;
@@ -271,11 +272,10 @@ static bool do_destroy_with_snapshots(struct lxc_container *c)
 	if (ret < 0 || ret >= MAXPATHLEN)
 		return false;
 
-	if (dir_exists(path))
+	if (rmdir(path) < 0 && errno != ENOENT)
 		bret = c->destroy_with_snapshots(c);
 	else
 		bret = do_destroy(c);
 
 	return bret;
 }
-

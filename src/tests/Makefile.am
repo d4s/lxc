@@ -15,6 +15,7 @@ lxc_test_lxcpath_SOURCES = lxcpath.c
 lxc_test_cgpath_SOURCES = cgpath.c
 lxc_test_clonetest_SOURCES = clonetest.c
 lxc_test_console_SOURCES = console.c
+lxc_test_console_log_SOURCES = console_log.c lxctest.h
 lxc_test_snapshot_SOURCES = snapshot.c
 lxc_test_concurrent_SOURCES = concurrent.c
 lxc_test_may_control_SOURCES = may_control.c
@@ -26,6 +27,8 @@ lxc_test_apparmor_SOURCES = aa.c
 lxc_test_utils_SOURCES = lxc-test-utils.c lxctest.h
 lxc_test_parse_config_file_SOURCES = parse_config_file.c lxctest.h
 lxc_test_config_jump_table_SOURCES = config_jump_table.c lxctest.h
+lxc_test_shortlived_SOURCES = shortlived.c
+lxc_test_livepatch_SOURCES = livepatch.c lxctest.h
 
 AM_CFLAGS=-DLXCROOTFSMOUNT=\"$(LXCROOTFSMOUNT)\" \
 	-DLXCPATH=\"$(LXCPATH)\" \
@@ -50,17 +53,18 @@ endif
 bin_PROGRAMS = lxc-test-containertests lxc-test-locktests lxc-test-startone \
 	lxc-test-destroytest lxc-test-saveconfig lxc-test-createtest \
 	lxc-test-shutdowntest lxc-test-get_item lxc-test-getkeys lxc-test-lxcpath \
-	lxc-test-cgpath lxc-test-clonetest lxc-test-console \
+	lxc-test-cgpath lxc-test-clonetest lxc-test-console lxc-test-console-log \
 	lxc-test-snapshot lxc-test-concurrent lxc-test-may-control \
 	lxc-test-reboot lxc-test-list lxc-test-attach lxc-test-device-add-remove \
 	lxc-test-apparmor lxc-test-utils lxc-test-parse-config-file \
-	lxc-test-config-jump-table
+	lxc-test-config-jump-table lxc-test-shortlived lxc-test-livepatch
 
 bin_SCRIPTS = lxc-test-automount \
 	      lxc-test-autostart \
 	      lxc-test-cloneconfig \
 	      lxc-test-createconfig \
-	      lxc-test-no-new-privs
+	      lxc-test-no-new-privs \
+	      lxc-test-rootfs
 
 if DISTRO_UBUNTU
 bin_SCRIPTS += \
@@ -82,6 +86,7 @@ EXTRA_DIST = \
 	concurrent.c \
 	config_jump_table.c \
 	console.c \
+	console_log.c \
 	containertests.c \
 	createtest.c \
 	destroytest.c \
@@ -89,10 +94,12 @@ EXTRA_DIST = \
 	get_item.c \
 	getkeys.c \
 	list.c \
+	livepatch.c \
 	locktests.c \
 	lxcpath.c \
 	lxc-test-lxc-attach \
 	lxc-test-automount \
+	lxc-test-rootfs \
 	lxc-test-autostart \
 	lxc-test-apparmor-mount \
 	lxc-test-checkpoint-restore \
@@ -107,6 +114,7 @@ EXTRA_DIST = \
 	may_control.c \
 	parse_config_file.c \
 	saveconfig.c \
+	shortlived.c \
 	shutdowntest.c \
 	snapshot.c \
 	startone.c

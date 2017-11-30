@@ -38,6 +38,7 @@
 #include "attach.h"
 #include "arguments.h"
 #include "caps.h"
+#include "conf.h"
 #include "confile.h"
 #include "console.h"
 #include "log.h"
@@ -50,8 +51,6 @@
 #else
 #include <../include/openpty.h>
 #endif
-
-lxc_log_define(lxc_attach_ui, lxc);
 
 static const struct option my_longopts[] = {
 	{"elevated-privileges", optional_argument, 0, 'e'},
@@ -279,20 +278,44 @@ static int get_pty_on_host_callback(void *p)
 
 static int get_pty_on_host(struct lxc_container *c, struct wrapargs *wrap, int *pid)
 {
-	int ret = -1;
-	struct wrapargs *args = wrap;
 	struct lxc_epoll_descr descr;
 	struct lxc_conf *conf;
 	struct lxc_tty_state *ts;
-
-	INFO("Trying to allocate a pty on the host");
+	int ret = -1;
+	struct wrapargs *args = wrap;
 
 	if (!isatty(args->ptyfd)) {
-		ERROR("Standard file descriptor does not refer to a pty\n.");
+		fprintf(stderr, "Standard file descriptor does not refer to a pty\n");
 		return -1;
 	}
 
-	conf = c->lxc_conf;
+	if (c->lxc_conf) {
+		conf = c->lxc_conf;
+	} else {
+		/* If the container is not defined and the user didn't specify a
+		 * config file to load we will simply init a dummy config here.
+		 */
+		conf = lxc_conf_init();
+		if (!conf) {
+			fprintf(stderr, "Failed to allocate dummy config file for the container\n");
+			return -1;
+		}
+
+		/* We also need a dummy rootfs path otherwise
+		 * lxc_console_create() will not let us create a console. Note,
+		 * I don't want this change to make it into
+		 * lxc_console_create()'s since this function will only be
+		 * responsible for proper /dev/{console,tty<n>} devices.
+		 * lxc-attach is just abusing it to also handle the pty case
+		 * because it is very similar. However, with LXC 3.0 lxc-attach
+		 * will need to move away from using lxc_console_create() since
+		 * this is actually an internal symbol and we only want the
+		 * tools to use the API with LXC 3.0.
+		 */
+		conf->rootfs.path = strdup("dummy");
+		if (!conf->rootfs.path)
+			return -1;
+	}
 	free(conf->console.log_path);
 	if (my_args.console_log)
 		conf->console.log_path = strdup(my_args.console_log);
@@ -316,7 +339,7 @@ static int get_pty_on_host(struct lxc_container *c, struct wrapargs *wrap, int *
 
 	/* Shift ttys to container. */
 	if (lxc_ttys_shift_ids(conf) < 0) {
-		ERROR("Failed to shift tty into container");
+		fprintf(stderr, "Failed to shift tty into container\n");
 		goto err1;
 	}
 
@@ -328,18 +351,18 @@ static int get_pty_on_host(struct lxc_container *c, struct wrapargs *wrap, int *
 
 	ret = lxc_mainloop_open(&descr);
 	if (ret) {
-		ERROR("failed to create mainloop");
+		fprintf(stderr, "failed to create mainloop\n");
 		goto err2;
 	}
 
 	if (lxc_console_mainloop_add(&descr, conf) < 0) {
-		ERROR("Failed to add handlers to lxc mainloop.");
+		fprintf(stderr, "Failed to add handlers to lxc mainloop.\n");
 		goto err3;
 	}
 
 	ret = lxc_mainloop(&descr, -1);
 	if (ret) {
-		ERROR("mainloop returned an error");
+		fprintf(stderr, "mainloop returned an error\n");
 		goto err3;
 	}
 	ret = 0;
@@ -348,7 +371,7 @@ err3:
 	lxc_mainloop_close(&descr);
 err2:
 	if (ts && ts->sigfd != -1)
-		lxc_console_sigwinch_fini(ts);
+		lxc_console_signal_fini(ts);
 err1:
 	lxc_console_delete(&conf->console);
 
@@ -406,6 +429,9 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
+
 	struct lxc_container *c = lxc_container_new(my_args.name, my_args.lxcpath[0]);
 	if (!c)
 		exit(EXIT_FAILURE);
@@ -413,13 +439,13 @@ int main(int argc, char *argv[])
 	if (my_args.rcfile) {
 		c->clear_config(c);
 		if (!c->load_config(c, my_args.rcfile)) {
-			ERROR("Failed to load rcfile");
+			fprintf(stderr, "Failed to load rcfile\n");
 			lxc_container_put(c);
 			exit(EXIT_FAILURE);
 		}
 		c->configfile = strdup(my_args.rcfile);
 		if (!c->configfile) {
-			ERROR("Out of memory setting new config filename");
+			fprintf(stderr, "Out of memory setting new config filename\n");
 			lxc_container_put(c);
 			exit(EXIT_FAILURE);
 		}
@@ -427,12 +453,6 @@ int main(int argc, char *argv[])
 
 	if (!c->may_control(c)) {
 		fprintf(stderr, "Insufficent privileges to control %s\n", c->name);
-		lxc_container_put(c);
-		exit(EXIT_FAILURE);
-	}
-
-	if (!c->is_defined(c)) {
-		fprintf(stderr, "Error: container %s is not defined\n", c->name);
 		lxc_container_put(c);
 		exit(EXIT_FAILURE);
 	}
@@ -454,7 +474,7 @@ int main(int argc, char *argv[])
 
 	struct wrapargs wrap = (struct wrapargs){
 		.command = &command,
-			.options = &attach_options
+		.options = &attach_options
 	};
 
 	wrap.ptyfd = stdfd_is_pty();

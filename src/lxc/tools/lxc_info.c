@@ -37,8 +37,6 @@
 #include "commands.h"
 #include "arguments.h"
 
-lxc_log_define(lxc_info_ui, lxc);
-
 static bool ips;
 static bool state;
 static bool pid;
@@ -116,18 +114,18 @@ static void size_humanize(unsigned long long val, char *buf, size_t bufsz)
 {
 	if (val > 1 << 30) {
 		snprintf(buf, bufsz, "%u.%2.2u GiB",
-			    (int)(val >> 30),
-			    (int)(val & ((1 << 30) - 1)) / 10737419);
+			    (unsigned int)(val >> 30),
+			    (unsigned int)(val & ((1 << 30) - 1)) / 10737419);
 	} else if (val > 1 << 20) {
-		int x = val + 5243;  /* for rounding */
+		unsigned int x = val + 5243;  /* for rounding */
 		snprintf(buf, bufsz, "%u.%2.2u MiB",
 			    x >> 20, ((x & ((1 << 20) - 1)) * 100) >> 20);
 	} else if (val > 1 << 10) {
-		int x = val + 5;  /* for rounding */
+		unsigned int x = val + 5;  /* for rounding */
 		snprintf(buf, bufsz, "%u.%2.2u KiB",
 			    x >> 10, ((x & ((1 << 10) - 1)) * 100) >> 10);
 	} else {
-		snprintf(buf, bufsz, "%u bytes", (int)val);
+		snprintf(buf, bufsz, "%u bytes", (unsigned int)val);
 	}
 }
 
@@ -412,6 +410,9 @@ int main(int argc, char *argv[])
 	if (lxc_log_init(&log))
 		exit(ret);
 	lxc_log_options_no_override();
+
+	/* REMOVE IN LXC 3.0 */
+	setenv("LXC_UPDATE_CONFIG_FORMAT", "1", 0);
 
 	if (print_info(my_args.name, my_args.lxcpath[0]) == 0)
 		ret = EXIT_SUCCESS;

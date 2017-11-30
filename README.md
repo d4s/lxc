@@ -1,13 +1,19 @@
+[![LXD](https://linuxcontainers.org/static/img/containers.png)](https://linuxcontainers.org/lxd)
 # LXC
-
-* Jenkins: [![Build Status](https://jenkins.linuxcontainers.org/job/lxc-github-commit/badge/icon)](https://jenkins.linuxcontainers.org/job/lxc-github-commit/)
-* Travis:  [![Build Status](https://travis-ci.org/lxc/lxc.svg?branch=master)](https://travis-ci.org/lxc/lxc/)
 
 LXC is the well-known and heavily tested low-level Linux container runtime. It
 is in active development since 2008 and has proven itself in critical
 production environments world-wide. Some of its core contributors are the same
 people that helped to implement various well-known containerization features
 inside the Linux kernel.
+
+## Status
+Type            | Service               | Status
+---             | ---                   | ---
+CI (Linux)      | Jenkins               | [![Build Status](https://jenkins.linuxcontainers.org/job/lxc-github-commit/badge/icon)](https://jenkins.linuxcontainers.org/job/lxc-github-commit/)
+CI (Linux)      | Travis                | [![Build Status](https://travis-ci.org/lxc/lxc.svg?branch=master)](https://travis-ci.org/lxc/lxc/)
+Project status  | CII Best Practices    | [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/1087/badge)](https://bestpractices.coreinfrastructure.org/projects/1087)
+
 
 ## System Containers
 
@@ -79,13 +85,13 @@ quite restricted. Just to highlight the two most common problems:
 
 LXC is configured via a simple set of keys. For example,
 
-- `lxc.rootfs`
+- `lxc.rootfs.path`
 - `lxc.mount.entry`
 
 LXC namespaces configuration keys by using single dots. This means complex
 configuration keys such as `lxc.net.0` expose various subkeys such as
-`lxc.net.0.type`, `lxc.net.0.link`, `lxc.net.0.ipv6`, and others for even
-more fine-grained configuration.
+`lxc.net.0.type`, `lxc.net.0.link`, `lxc.net.0.ipv6.address`, and others for
+even more fine-grained configuration.
 
 LXC is used as the default runtime for [LXD](https://github.com/lxc/lxd),
 a container hypervisor exposing a well-designed and stable REST-api on top of
